@@ -15,8 +15,8 @@ public class BaseJPATestCase extends TestCase {
 	@Override
 	protected void setUp() throws Exception {
 		
-		BaseJPADAO.setAwsAccessId("0QWXVVCMRE4KQMZGNE82");
-		BaseJPADAO.setAwsSecretKey("axS22ZxQrCXFN5wQ+cnsF1+lNKllDV5mEwbNqjTc");
+		BaseJPADAO.setAwsAccessId("xxx");
+		BaseJPADAO.setAwsSecretKey("xxx");
 		BaseJPADAO.setPersistenceUnitName("unitTest");
 		
 	}
@@ -25,8 +25,8 @@ public class BaseJPATestCase extends TestCase {
 	public static void main(String[] args) {
 		
 		
-		byte[] accessId=Base64.decodeBase64("0QWXVVCMRE4KQMZGNE82".getBytes());
-		byte[] secretKey=Base64.decodeBase64("axS22ZxQrCXFN5wQ+cnsF1+lNKllDV5mEwbNqjTc".getBytes());
+		byte[] accessId=Base64.decodeBase64("xxx".getBytes());
+		byte[] secretKey=Base64.decodeBase64("xxx".getBytes());
 		
 		System.err.println("Access id length: "+accessId.length+" secret key length: "+secretKey.length);
 		

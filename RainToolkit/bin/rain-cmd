@@ -11,7 +11,7 @@ do
         CLASSPATH=$CLASSPATH:$a
 done
 
-CLASSPATH=$CLASSPATH:classes
+CLASSPATH=$CLASSPATH:build/classes
 export CLASSPATH
 CMD=$1
 shift

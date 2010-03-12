@@ -24,8 +24,8 @@ public class SimpleJPATestCase extends TestCase {
 	public void testSimpleDbJPA() {
 		
 		Properties prop=new Properties();
-		prop.put("accessKey","0QWXVVCMRE4KQMZGNE82");
-		prop.put("secretKey","XTS5kbLFIHJ60ozJDN241Kt7rpCTY7yr14ZqxeWn");
+		prop.put("accessKey","xxx");
+		prop.put("secretKey","xx");
 		prop.put("sessionless", "true");
 		
 		// Create EntityManagerFactory. This should be a global object that you reuse.

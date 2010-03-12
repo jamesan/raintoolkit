@@ -29,7 +29,7 @@ public class DefaultVirtualMachineDAOTestCase extends TestCase {
 		
 		// Create the S3 service
 		
-		AWSCredentials credentials=new AWSCredentials("0QWXVVCMRE4KQMZGNE82","XTS5kbLFIHJ60ozJDN241Kt7rpCTY7yr14ZqxeWn");
+		AWSCredentials credentials=new AWSCredentials("xxx","xxx");
 		
 		try {
 			RestS3Service service=new RestS3Service(credentials);
