@@ -23,8 +23,22 @@ import com.sampullara.cli.Argument;
 @Entity
 public class VirtualMachine {
 
-	public enum InstanceType {SMALL,LARGE,EXTRA_LARGE,HIGH_CPU_LARGE,HIGH_CPU_EXTRA_LARGE 
-	
+	public enum InstanceType {
+            //t1.micro, m1.small, m1.large, m1.xlarge, m2.xlarge, m2.2xlarge, m2.4xlarge, c1.medium, c1.xlarge, cc1.4xlarge, cg1.4xlarge
+            MICRO("t1.micro"),SMALL("m1.small"),LARGE("m1.large"),EXTRA_LARGE("m1.xlarge"),HIGH_MEMORY_XLARGE("m2.xlarge"),HIGH_MEMORY_DOUBLE_EXTRA_LARGE("m2.2xlarge"),
+            HIGH_MEMORY_QUAD_EXTRA_LARGE("M2.4XLARGE"),HIGH_CPU_MEDIUM("c1.medium"),HIGH_CPU_EXTRA_LARGE("c1.xlarge"),CLUSTER_QUAD_EXTRA_LARGE("cc1.4xlarge"),
+            CLUSTER_GPU_QUAD_EXTRA_LARGE("cg1.4xlarge");
+
+            private String name;
+
+             InstanceType(String name) {
+                this.name=name;
+            }
+
+             public String getName() {
+                 return name;
+             }
+
 	
 	  
 	}

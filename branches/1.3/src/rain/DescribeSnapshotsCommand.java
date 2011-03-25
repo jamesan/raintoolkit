@@ -7,7 +7,6 @@ package rain;
 import java.util.List;
 
 import com.sampullara.cli.Argument;
-import com.xerox.amazonws.ec2.EC2Exception;
 
 public class DescribeSnapshotsCommand extends BaseCommand {
 

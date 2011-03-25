@@ -90,7 +90,7 @@ public class CreateVirtualMachineCommand extends BaseCommand {
 				engine.modifyVirtualMachine(vm, newName);
 			else {
 				if(image==null) {
-					System.err.println("You must specify an image name");
+					output.printError("You must specify an image name");
 					System.exit(1);
 					return;
 				}
@@ -98,35 +98,38 @@ public class CreateVirtualMachineCommand extends BaseCommand {
 			}
 		}
 		catch(AMIDoesNotExistException e2) {
-			System.err.println("Amazon Machine Image "+vm.getImage()+" does not exist");
+			output.printError("Amazon Machine Image "+vm.getImage()+" does not exist");
 			System.exit(1);
 		}
 		catch(RuntimeException e) {
-			System.err.println("Cannot create virtual machine");
+			output.printError("Cannot create virtual machine");
 			logger.log(Level.FINE, "Error creating virtual machine",e);
 			System.exit(1);
 		} catch (VirtualMachineAlreadyExistsException e) {
-			System.err.println("Virtual machine "+name+" already exists");
+			output.printError("Virtual machine "+name+" already exists");
 			
 		} catch (VirtualMachineNotFoundException e) {
-			System.err.println("Virtual machine "+name+" not found");
+			output.printError("Virtual machine "+name+" not found");
 		} catch (SecurityGroupNotFoundException e) {
 		
-			System.err.println("Security group not found: "+e.getGroup());
+			output.printError("Security group not found: "+e.getGroup());
 		} catch (KernelNotFoundException e) {
 			
-			System.err.println("Kernel image not found: "+e.getKernel());
+			output.printError("Kernel image not found: "+e.getKernel());
 		} catch (InstanceNotFoundException e) {
-			System.err.println("Virtual Machine instance not found: "+e.getInstance());
+			output.printError("Virtual Machine instance not found: "+e.getInstance());
 		} catch (AvailabilityZoneNotFoundException e) {
-			System.err.println("Availability zone not found: "+e.getAvailabilityZone());
+			output.printError("Availability zone not found: "+e.getAvailabilityZone());
 		} catch (StaticIpAddressNotFoundException e) {
-			System.err.println("Static ip address is not allocated for the current account: "+e.getStaticIpAddress());
+			output.printError("Static ip address is not allocated for the current account: "+e.getStaticIpAddress());
 		} catch (IpAddressAlreadyAssignedException e) {
-			System.err.println("Static ip "+vm.getStaticIpAddress()+" already assigned to virtual machine "+e.getVirtualMachine().getName());
+			output.printError("Static ip "+vm.getStaticIpAddress()+" already assigned to virtual machine "+e.getVirtualMachine().getName());
 		} catch (KeyPairNotFoundException e) {
-			System.err.println("Key pair "+e.getKeypair()+" not found");
+			output.printError("Key pair "+e.getKeypair()+" not found");
 		}
+                catch(ImageIsNotKernelException e) {
+                    output.printError("Image "+e.getKernel()+" is not a kernel image");
+                }
 		
 		System.exit(1);
 	}

@@ -5,7 +5,6 @@
 package rain;
 
 import com.sampullara.cli.Argument;
-import com.xerox.amazonws.ec2.EC2Exception;
 
 public class CreateVolumeCommand extends BaseCommand {
 
@@ -84,11 +83,7 @@ public class CreateVolumeCommand extends BaseCommand {
 			System.exit(0);
 			return;
 
-		} catch (EC2Exception e) {
-			System.err.println("Unexpected error while executing command:");
-			e.printStackTrace();
-
-		} catch (VolumeAlreadyExistsException e) {
+                } catch (VolumeAlreadyExistsException e) {
 			System.err.println("Volume " + e.getVolume().getName() + " already exists");
 
 		} catch (VolumeNotFoundException e) {
@@ -97,6 +92,11 @@ public class CreateVolumeCommand extends BaseCommand {
 			System.err.println("Snapshot not found: " + e.getSnapshot());
 		} catch (VolumeAlreadyInUseException e) {
 			System.err.println("Volume "+e.getVolume().getName()+" already uses EC2 volume "+e.getVolume().getVolumeId());
+		
+                } catch (Exception e) {
+			System.err.println("Unexpected error while executing command:");
+			e.printStackTrace();
+
 		}
 
 		System.exit(1);

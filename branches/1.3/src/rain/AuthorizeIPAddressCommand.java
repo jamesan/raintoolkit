@@ -3,7 +3,7 @@ package rain;
 import java.io.IOException;
 
 import com.sampullara.cli.Argument;
-import com.xerox.amazonws.ec2.EC2Exception;
+
 
 public class AuthorizeIPAddressCommand extends BaseCommand {
 
@@ -41,7 +41,7 @@ public class AuthorizeIPAddressCommand extends BaseCommand {
 			
 			try {
 				groups=engine.getSecurityGroupNames();
-			} catch (EC2Exception e) {
+			} catch (Exception e) {
 				System.err.println("Error getting security group names");
 				e.printStackTrace();
 				return;
