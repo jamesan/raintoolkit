@@ -47,10 +47,14 @@ public class StartVirtualMachineCommand extends BaseCommand {
 			System.err.println("Auto run command "+e.getVm().getAutoRunCommand()+" failed with status "+e.getExitValue());
 			
 		}
-		catch(Exception e) {
+                catch(InstanceStoppingException e) {
+                    output.printError("Virtual machine is still stopping");
+                }
+                catch(Exception e) {
 			System.err.println("There was an unexpected exception while starting the virtual machine:");
 			e.printStackTrace(System.err);
 		}
+		
 		
 		System.exit(1);
 		

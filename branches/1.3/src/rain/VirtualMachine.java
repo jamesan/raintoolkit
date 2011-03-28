@@ -55,6 +55,16 @@ public class VirtualMachine {
 	private String staticIpAddress;
 	private InstanceType instanceType;
 	private String autoRunCommand;
+        private Boolean isEBSRootDevice=false;
+
+        public Boolean getIsEBSRootDevice() {
+         return isEBSRootDevice;
+        }
+
+        public void setIsEBSRootDevice(Boolean isEBSRootDevice) {
+          this.isEBSRootDevice = isEBSRootDevice;
+        }
+
 	
 	public String getAutoRunCommand() {
 		return autoRunCommand;

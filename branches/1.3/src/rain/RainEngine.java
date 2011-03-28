@@ -12,6 +12,7 @@ import com.amazonaws.services.ec2.model.AllocateAddressResult;
 import com.amazonaws.services.ec2.model.AssociateAddressRequest;
 import com.amazonaws.services.ec2.model.AttachVolumeRequest;
 import com.amazonaws.services.ec2.model.AuthorizeSecurityGroupIngressRequest;
+import com.amazonaws.services.ec2.model.BlockDeviceMapping;
 import com.amazonaws.services.ec2.model.CreateSnapshotRequest;
 import com.amazonaws.services.ec2.model.CreateSnapshotResult;
 import com.amazonaws.services.ec2.model.CreateVolumeRequest;
@@ -35,6 +36,7 @@ import com.amazonaws.services.ec2.model.DescribeSnapshotsResult;
 import com.amazonaws.services.ec2.model.DescribeVolumesRequest;
 import com.amazonaws.services.ec2.model.DescribeVolumesResult;
 import com.amazonaws.services.ec2.model.DetachVolumeRequest;
+import com.amazonaws.services.ec2.model.EbsBlockDevice;
 import com.amazonaws.services.ec2.model.Image;
 import com.amazonaws.services.ec2.model.Instance;
 import com.amazonaws.services.ec2.model.InstanceState;
@@ -47,6 +49,9 @@ import com.amazonaws.services.ec2.model.RunInstancesRequest;
 import com.amazonaws.services.ec2.model.RunInstancesResult;
 import com.amazonaws.services.ec2.model.SecurityGroup;
 import com.amazonaws.services.ec2.model.Snapshot;
+import com.amazonaws.services.ec2.model.StartInstancesRequest;
+import com.amazonaws.services.ec2.model.StartInstancesResult;
+import com.amazonaws.services.ec2.model.StopInstancesRequest;
 import com.amazonaws.services.ec2.model.TerminateInstancesRequest;
 import com.amazonaws.services.ec2.model.VolumeAttachment;
 import java.io.File;
@@ -57,6 +62,7 @@ import java.net.URL;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
@@ -73,14 +79,18 @@ import java.util.Calendar;
 
 public class RainEngine extends BaseEngine {
 
-
-
-
     private static final long DEFAULT_POLL_INTERVAL = 10000;
     private static final int MAX_MOUNT_RETRIES = 50;
     private static final int MAX_VOLUME_DETACH_RETRIES = 3;
     public static RainEngine instance;
     static Logger logger = Logger.getLogger(RainEngine.class.getName());
+    //: 0 (pending) | 16 (running) | 32 (shutting-down) | 48 (terminated) | 64  (stopping) | 80 (stopped)
+    public static final int INSTANCE_STATE_PENDING = 0;
+    public static final int INSTANCE_STATE_RUNNING = 16;
+    public static final int INSTANCE_STATE_SHUTTING_DOWN = 32;
+    public static final int INSTANCE_STATE_TERMINATED = 48;
+    public static final int INSTANCE_STATE_STOPPING = 64;
+    public static final int INSTANCE_STATE_STOPPED = 80;
 
     public static synchronized RainEngine getInstance() {
         if (instance == null) {
@@ -142,7 +152,7 @@ public class RainEngine extends BaseEngine {
             StaticIpAddressNotFoundException,
             IpAddressAlreadyAssignedException, KeyPairNotFoundException, ImageIsNotKernelException {
 
-        if (!checkAMIExists(vm.getImage())) {
+        if (checkAMIExists(vm.getImage()) == null) {
             throw new AMIDoesNotExistException(vm.getImage());
         }
 
@@ -182,14 +192,19 @@ public class RainEngine extends BaseEngine {
         }
     }
 
-    private boolean checkAMIExists(String image) {
+    private Image checkAMIExists(String image) {
 
 
         DescribeImagesResult result = ec2.describeImages(new DescribeImagesRequest().withImageIds(image));
-        return result.getImages().size() > 0;
+        if (result.getImages().size() > 0) {
+            return result.getImages().get(0);
+        }
+
+        return null;
+
     }
 
-    public String getVirtualMachineStatus(String name) {
+    public String getVirtualMachineIPAddress(String name) {
 
         VirtualMachine vm = virtualMachineDAO.findByName(name);
         if (vm == null) {
@@ -217,13 +232,33 @@ public class RainEngine extends BaseEngine {
 
     }
 
+    public Integer getVirtualMachineStatus(String name) {
+        VirtualMachine vm = virtualMachineDAO.findByName(name);
+        if (vm == null) {
+            return null;
+        }
+        if (vm.getCurrentInstance() == null) {
+            return null;
+        }
+
+        DescribeInstancesResult instances = ec2.describeInstances(new DescribeInstancesRequest().withInstanceIds(vm.getCurrentInstance()));
+
+        if (instances.getReservations().size() == 0) {
+            return INSTANCE_STATE_TERMINATED;
+        }
+
+        return instances.getReservations().get(0).getInstances().get(0).getState().getCode();
+
+
+    }
+
     public String startVirtualMachine(String name)
             throws VirtualMachineNotFoundException,
             CannotStartInstanceException,
             VirtualMachineAlreadyRunningException,
             InconsistentAvailabilityZoneException,
             VolumeAlreadyAttachedException, AddressAlreadyAssignedException,
-            VolumeMountFailedException, AutoRunCommandFailedException {
+            VolumeMountFailedException, AutoRunCommandFailedException,InstanceStoppingException {
 
         VirtualMachine vm = virtualMachineDAO.findByName(name);
         if (vm == null) {
@@ -231,44 +266,70 @@ public class RainEngine extends BaseEngine {
         }
 
         try {
-            String currentDnsName = getVirtualMachineStatus(name);
+            Integer currentState = getVirtualMachineStatus(name);
 
-            if (currentDnsName != null) {
-                throw new VirtualMachineAlreadyRunningException(currentDnsName);
+            if (currentState != null && currentState == INSTANCE_STATE_RUNNING) {
+                throw new VirtualMachineAlreadyRunningException("");
             }
 
             String startZone = checkVolumeAvailabilityAndConsistency(vm);
 
             checkStaticAddressAvailability(vm);
 
-            // Start the virtual machine
-            RunInstancesRequest configuration = new RunInstancesRequest();
-            configuration.setPlacement(new Placement(startZone));
-            configuration.setKernelId(vm.getKernel());
-            configuration.setKeyName(vm.getKeypair());
-            configuration.setRamdiskId(vm.getRamdisk());
-            if (vm.getSecurityGroup() != null) {
-                String[] tmp = vm.getSecurityGroup().split(",");
-                configuration.setSecurityGroupIds(Arrays.asList(tmp));
+            if (vm.getIsEBSRootDevice() && currentState != null && currentState == INSTANCE_STATE_STOPPING) {
+                throw new InstanceStoppingException(vm);
+            }
+
+
+            Instance instance;
+
+            if (vm.getIsEBSRootDevice() && currentState != null && currentState == INSTANCE_STATE_STOPPED) {
+                // Need to start a previously stopped machine
+
+                StartInstancesResult result = ec2.startInstances(new StartInstancesRequest().withInstanceIds(vm.getCurrentInstance()));
+                instance = waitForInstanceToStartRunning(vm.getCurrentInstance());
+
+
+            } else {
+
+
+                // Start the virtual machine
+                RunInstancesRequest configuration = new RunInstancesRequest();
+                configuration.setImageId(vm.getImage());
+                configuration.setMaxCount(1);
+                configuration.setMinCount(1);
+                configuration.setPlacement(new Placement(startZone));
+                configuration.setKernelId(vm.getKernel());
+                configuration.setKeyName(vm.getKeypair());
+                configuration.setRamdiskId(vm.getRamdisk());
+                if (vm.getSecurityGroup() != null) {
+                    String[] tmp = vm.getSecurityGroup().split(",");
+                    configuration.setSecurityGroupIds(Arrays.asList(tmp));
+
+                }
+
+                VirtualMachine.InstanceType type = vm.getInstanceType();
+                if (type == null) {
+                    type = VirtualMachine.InstanceType.SMALL;
+                }
+                configuration.setInstanceType(type.getName());
+
+                if (vm.getUserData() != null) {
+                    configuration.setUserData(vm.getUserData());
+                }
+
+
+
+                RunInstancesResult result = ec2.runInstances(configuration);
+                instance = result.getReservation().getInstances().get(0);
+                vm.setCurrentInstance(instance.getInstanceId());
+                virtualMachineDAO.saveOrUpdate(vm);
+
+                instance = waitForInstanceToStartRunning(instance.getInstanceId());
+
 
             }
 
-            VirtualMachine.InstanceType type = vm.getInstanceType();
-            if (type == null) {
-                type = VirtualMachine.InstanceType.SMALL;
-            }
-            configuration.setInstanceType(type.getName());
-
-            if (vm.getUserData() != null) {
-                configuration.setUserData(vm.getUserData());
-            }
-
-            RunInstancesResult result = ec2.runInstances(configuration);
-            Instance instance = result.getReservation().getInstances().get(0);
-            vm.setCurrentInstance(instance.getInstanceId());
-            virtualMachineDAO.saveOrUpdate(vm);
-
-            instance = waitForInstanceToStartRunning(instance);
 
             if (!instance.getState().getName().equals(InstanceStateName.Running.toString())) {
                 throw new CannotStartInstanceException(instance.getState().getCode());
@@ -279,7 +340,7 @@ public class RainEngine extends BaseEngine {
                 instance = associateIpAddress(vm, instance);
             }
 
-            if (vm.getVolumes() != null) {
+            if (vm.getVolumes() != null ) {
                 // mount volumes
                 attachVolumes(vm);
                 instance = waitForPublicIpToBecomeAvailable(vm, instance);
@@ -294,10 +355,7 @@ public class RainEngine extends BaseEngine {
 
             return instance.getPublicDnsName();
 
-        }
-        catch(Exception e)
-
-         {
+        } catch (Exception e) {
             throw new RuntimeException(e);
         }
 
@@ -316,7 +374,7 @@ public class RainEngine extends BaseEngine {
     }
 
     private Instance waitForPublicIpToBecomeAvailable(VirtualMachine vm,
-            Instance instance)  {
+            Instance instance) {
 
         do {
             if (instance.getPublicDnsName() == null
@@ -337,13 +395,12 @@ public class RainEngine extends BaseEngine {
 
     }
 
-    private Instance associateIpAddress(VirtualMachine vm, Instance instance) throws UnknownHostException
-              {
+    private Instance associateIpAddress(VirtualMachine vm, Instance instance) throws UnknownHostException {
         // Associates the ip address and waits until the instance assumes the
         // address
 
         ec2.associateAddress(new AssociateAddressRequest(instance.getInstanceId(), vm.getStaticIpAddress()));
-        
+
         String instanceAddress;
         do {
             instance = refreshInstanceInformation(instance);
@@ -351,7 +408,7 @@ public class RainEngine extends BaseEngine {
             instanceAddress = InetAddress.getByName(instanceAddress).getHostAddress();
             if (!instanceAddress.equals(vm.getStaticIpAddress())) {
                 try {
-                    logger.fine("Waiting for static ip to be assigned (current name= "+instance.getPublicDnsName()+", ip = "+instanceAddress+", wanted = "+vm.getStaticIpAddress()+")");
+                    logger.fine("Waiting for static ip to be assigned (current name= " + instance.getPublicDnsName() + ", ip = " + instanceAddress + ", wanted = " + vm.getStaticIpAddress() + ")");
                     Thread.sleep(DEFAULT_POLL_INTERVAL);
                 } catch (InterruptedException e) {
                 }
@@ -363,10 +420,9 @@ public class RainEngine extends BaseEngine {
 
     }
 
-    private Instance refreshInstanceInformation(Instance instance)
-            {
+    private Instance refreshInstanceInformation(Instance instance) {
 
-       DescribeInstancesResult result = ec2.describeInstances(new DescribeInstancesRequest().withInstanceIds(instance.getInstanceId()));
+        DescribeInstancesResult result = ec2.describeInstances(new DescribeInstancesRequest().withInstanceIds(instance.getInstanceId()));
         if (result.getReservations().size() > 0) {
             instance = result.getReservations().get(0).getInstances().get(0);
         }
@@ -448,7 +504,12 @@ public class RainEngine extends BaseEngine {
 
     private void attachVolumes(VirtualMachine vm) {
 
+
         List<Volume> volumes = vm.getVolumes();
+
+        if(volumes==null || volumes.size()==0)
+            return;
+
         List<String> pendingVolumeIds = new ArrayList<String>();
         for (Volume vol : volumes) {
 
@@ -456,12 +517,12 @@ public class RainEngine extends BaseEngine {
             pendingVolumeIds.add(vol.getVolumeId());
 
         }
-        
+
         logger.fine("Waiting for volumes to attach...");
         do {
 
             DescribeVolumesResult result = ec2.describeVolumes(new DescribeVolumesRequest(pendingVolumeIds));
-            for (com.amazonaws.services.ec2.model.Volume v: result.getVolumes()) {
+            for (com.amazonaws.services.ec2.model.Volume v : result.getVolumes()) {
 
                 List<VolumeAttachment> attachments = v.getAttachments();
                 if (attachments.size() > 0) {
@@ -488,23 +549,24 @@ public class RainEngine extends BaseEngine {
         logger.fine("All volumes attached");
     }
 
-    private Instance waitForInstanceToStartRunning(Instance instance)
-            {
+    private Instance waitForInstanceToStartRunning(String instanceId) {
         int state;
+        Instance instance;
         do {
+            DescribeInstancesResult result = ec2.describeInstances(new DescribeInstancesRequest().withInstanceIds(Collections.singletonList(instanceId)));
+            instance = result.getReservations().get(0).getInstances().get(0);
             state = instance.getState().getCode();
             if (state == 0) {
                 try {
                     Thread.sleep(DEFAULT_POLL_INTERVAL);
                 } catch (InterruptedException e) {
                 }
-                DescribeInstancesResult result = ec2.describeInstances(new DescribeInstancesRequest().withInstanceIds(Collections.singletonList(instance.getInstanceId())));
                 if (result.getReservations().size() < 1) {
                     throw new RuntimeException("Instance "
                             + instance.getInstanceId()
                             + " vanished while waiting for it to start");
                 }
-                instance = result.getReservations().get(0).getInstances().get(0);
+
 
             }
         } while (state == 0);
@@ -514,13 +576,13 @@ public class RainEngine extends BaseEngine {
     }
 
     private String checkVolumeAvailabilityAndConsistency(VirtualMachine vm)
-            throws  InconsistentAvailabilityZoneException,
+            throws InconsistentAvailabilityZoneException,
             VolumeAlreadyAttachedException {
         String availabilityZone = vm.getAvailabilityZone();
 
         String availabilityZoneToCheck = availabilityZone;
         List<Volume> volumes = vm.getVolumes();
-        if (volumes != null) {
+        if (volumes != null && volumes.size()>0) {
 
             String[] volumeIds = new String[volumes.size()];
             for (int i = 0; i < volumes.size(); i++) {
@@ -550,7 +612,7 @@ public class RainEngine extends BaseEngine {
                         if (isInstanceRunning(attachedInstanceId)) {
                             throw new VolumeAlreadyAttachedException(volumes.get(i));
                         } else if (t < MAX_VOLUME_DETACH_RETRIES) {
-                            DetachVolumeRequest detachRequest=new DetachVolumeRequest(info.getVolumeId());
+                            DetachVolumeRequest detachRequest = new DetachVolumeRequest(info.getVolumeId());
                             detachRequest.setForce(Boolean.TRUE);
                             detachRequest.setInstanceId(attachment.getInstanceId());
 
@@ -569,18 +631,21 @@ public class RainEngine extends BaseEngine {
                 }
                 return availabilityZoneToCheck;
             }
+            throw new RuntimeException(
+                "Code should never get into this path, this is a bug");
 
         }
 
-        throw new RuntimeException(
-                "Code should never get into this path, this is a bug");
+        return availabilityZone;
+
+        
     }
 
-    private boolean isInstanceRunning(String id)  {
+    private boolean isInstanceRunning(String id) {
 
         DescribeInstancesResult result = ec2.describeInstances(new DescribeInstancesRequest().withInstanceIds(Collections.singletonList(id)));
 
-        for (Reservation r: result.getReservations()) {
+        for (Reservation r : result.getReservations()) {
 
             for (Instance instance : r.getInstances()) {
 
@@ -599,7 +664,7 @@ public class RainEngine extends BaseEngine {
             throws AddressAlreadyAssignedException {
         String staticIpAddress = vm.getStaticIpAddress();
         if (staticIpAddress != null) {
-            DescribeAddressesResult result= ec2.describeAddresses(new DescribeAddressesRequest().withPublicIps(Collections.singletonList(staticIpAddress)));
+            DescribeAddressesResult result = ec2.describeAddresses(new DescribeAddressesRequest().withPublicIps(Collections.singletonList(staticIpAddress)));
             Address info = result.getAddresses().get(0);
             if (info.getInstanceId() != null
                     && !info.getInstanceId().equals("")) {
@@ -632,11 +697,11 @@ public class RainEngine extends BaseEngine {
             volumeSize = "" + size;
         }
 
-        CreateVolumeRequest request=new CreateVolumeRequest();
+        CreateVolumeRequest request = new CreateVolumeRequest();
 
-         request.setSnapshotId(snapshot);
-         request.setSize(size);
-         request.setAvailabilityZone(availabilityZone);
+        request.setSnapshotId(snapshot);
+        request.setSize(size);
+        request.setAvailabilityZone(availabilityZone);
 
         CreateVolumeResult result = ec2.createVolume(request);
         if (name != null) {
@@ -649,7 +714,7 @@ public class RainEngine extends BaseEngine {
     }
 
     private void checkSnapshotAvailability(String snapshot)
-            throws  SnapshotNotFoundException {
+            throws SnapshotNotFoundException {
         DescribeSnapshotsResult result = ec2.describeSnapshots();
         boolean foundSnapshot = false;
 
@@ -674,7 +739,7 @@ public class RainEngine extends BaseEngine {
             throw new VolumeAlreadyExistsException(vol);
         }
 
-        DescribeVolumesResult result= ec2.describeVolumes(new DescribeVolumesRequest().withVolumeIds(Collections.singletonList(volumeId)));
+        DescribeVolumesResult result = ec2.describeVolumes(new DescribeVolumesRequest().withVolumeIds(Collections.singletonList(volumeId)));
         if (result == null || result.getVolumes().isEmpty()) {
             throw new VolumeNotFoundException(volumeId);
         }
@@ -788,8 +853,13 @@ public class RainEngine extends BaseEngine {
         }
 
         if (vm.getImage() != null) {
-            checkImage(vm.getImage());
+            Image image = checkImage(vm.getImage());
             current.setImage(vm.getImage());
+            if (image.getRootDeviceType().equals("ebs")) {
+                vm.setIsEBSRootDevice(true);
+            } else {
+                vm.setIsEBSRootDevice(false);
+            }
         }
 
         if (vm.getInstanceType() != null) {
@@ -847,124 +917,160 @@ public class RainEngine extends BaseEngine {
 
     private void checkKeyPair(String keypair) throws KeyPairNotFoundException {
 
-            DescribeKeyPairsResult result = ec2.describeKeyPairs(new DescribeKeyPairsRequest().withKeyNames(Collections.singletonList(keypair)));
-            if (result.getKeyPairs().size() == 0) {
-                throw new KeyPairNotFoundException(keypair);
-            }
-       
+        DescribeKeyPairsResult result = ec2.describeKeyPairs(new DescribeKeyPairsRequest().withKeyNames(Collections.singletonList(keypair)));
+        if (result.getKeyPairs().size() == 0) {
+            throw new KeyPairNotFoundException(keypair);
+        }
+
 
     }
 
     private void checkIpAddress(String staticIpAddress)
             throws StaticIpAddressNotFoundException {
 
-            DescribeAddressesResult result = ec2.describeAddresses(new DescribeAddressesRequest().withPublicIps(Collections.singletonList(staticIpAddress)));
-            if (result.getAddresses().size() == 0) {
-                throw new StaticIpAddressNotFoundException(staticIpAddress);
-            }
-        
+        DescribeAddressesResult result = ec2.describeAddresses(new DescribeAddressesRequest().withPublicIps(Collections.singletonList(staticIpAddress)));
+        if (result.getAddresses().size() == 0) {
+            throw new StaticIpAddressNotFoundException(staticIpAddress);
+        }
+
 
     }
 
     private String allocateStaticIpAddress() {
 
-        
-           AllocateAddressResult result = ec2.allocateAddress();
-            return result.getPublicIp();
-       
+
+        AllocateAddressResult result = ec2.allocateAddress();
+        return result.getPublicIp();
+
     }
 
     private void checkAvailabilityZone(String availabilityZone)
             throws AvailabilityZoneNotFoundException {
 
-        
-           DescribeAvailabilityZonesResult result = ec2.describeAvailabilityZones(new DescribeAvailabilityZonesRequest().withZoneNames(Collections.singletonList(availabilityZone)));
-            if (result.getAvailabilityZones().size() == 0) {
-                throw new AvailabilityZoneNotFoundException(availabilityZone);
-            }
 
-       
+        DescribeAvailabilityZonesResult result = ec2.describeAvailabilityZones(new DescribeAvailabilityZonesRequest().withZoneNames(Collections.singletonList(availabilityZone)));
+        if (result.getAvailabilityZones().size() == 0) {
+            throw new AvailabilityZoneNotFoundException(availabilityZone);
+        }
+
+
 
     }
 
     private void checkInstance(String currentInstance)
             throws InstanceNotFoundException {
 
-       
-            DescribeInstancesResult result= ec2.describeInstances(new DescribeInstancesRequest().withInstanceIds(currentInstance));
-            if (result.getReservations().size() == 0) {
-                throw new InstanceNotFoundException(currentInstance);
-            }
-        
+
+        DescribeInstancesResult result = ec2.describeInstances(new DescribeInstancesRequest().withInstanceIds(currentInstance));
+        if (result.getReservations().size() == 0) {
+            throw new InstanceNotFoundException(currentInstance);
+        }
+
 
     }
 
-    private void checkImage(String image) throws AMIDoesNotExistException {
+    private Image checkImage(String image) throws AMIDoesNotExistException {
 
-        if (!checkAMIExists(image)) {
+        Image ami = checkAMIExists(image);
+
+        if (ami == null) {
             throw new AMIDoesNotExistException(image);
         }
+
+
+        return ami;
+
     }
 
     private void checkKernel(String kernel) throws KernelNotFoundException, ImageIsNotKernelException {
 
-   
-            DescribeImagesResult result = ec2.describeImages(new DescribeImagesRequest().withImageIds(Collections.singletonList(kernel)));
-            if (result.getImages().size() == 0) {
-                throw new KernelNotFoundException(kernel);
-            }
-            Image image=result.getImages().get(0);
-            if(!image.getImageType().equals("kernel"))
-                throw new ImageIsNotKernelException(kernel);
 
-            
+        DescribeImagesResult result = ec2.describeImages(new DescribeImagesRequest().withImageIds(Collections.singletonList(kernel)));
+        if (result.getImages().size() == 0) {
+            throw new KernelNotFoundException(kernel);
+        }
+        Image image = result.getImages().get(0);
+        if (!image.getImageType().equals("kernel")) {
+            throw new ImageIsNotKernelException(kernel);
+        }
 
-      
+
+
+
 
     }
 
     private void checkSecurityGroups(String groups)
             throws SecurityGroupNotFoundException {
 
-       
 
-            String[] tmp = groups.split(",");
-            DescribeSecurityGroupsResult result = ec2.describeSecurityGroups(new DescribeSecurityGroupsRequest().withGroupNames(Arrays.asList(tmp)));
 
-            for (String group : tmp) {
-                boolean found = false;
-                for (SecurityGroup i : result.getSecurityGroups()) {
-                    if (i.getGroupName().equals(group)) {
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    throw new SecurityGroupNotFoundException(group);
+        String[] tmp = groups.split(",");
+        DescribeSecurityGroupsResult result = ec2.describeSecurityGroups(new DescribeSecurityGroupsRequest().withGroupNames(Arrays.asList(tmp)));
+
+        for (String group : tmp) {
+            boolean found = false;
+            for (SecurityGroup i : result.getSecurityGroups()) {
+                if (i.getGroupName().equals(group)) {
+                    found = true;
+                    break;
                 }
             }
-       
+            if (!found) {
+                throw new SecurityGroupNotFoundException(group);
+            }
+        }
+
 
     }
 
-    public void terminateVirtualMachine(String name)
+    public void terminateVirtualMachine(String name,boolean forceEBSTermination)
             throws VirtualMachineNotRunningException,
-            VirtualMachineNotFoundException {
+            VirtualMachineNotFoundException,
+            EBSVirtualMachineTerminateException {
 
         VirtualMachine vm = virtualMachineDAO.findByName(name);
         if (vm == null) {
             throw new VirtualMachineNotFoundException(name);
         }
 
-        String ipAddress = getVirtualMachineStatus(name);
-        if (ipAddress == null) {
+        if(vm.getIsEBSRootDevice() && ! forceEBSTermination)
+            throw new EBSVirtualMachineTerminateException(vm);
+
+
+       Integer state = getVirtualMachineStatus(name);
+        if (state !=null && state!=INSTANCE_STATE_STOPPED && state!=INSTANCE_STATE_RUNNING) {
             throw new VirtualMachineNotRunningException(name);
         }
 
-     
+
         ec2.terminateInstances(new TerminateInstancesRequest().withInstanceIds(Collections.singletonList(vm.getCurrentInstance())));
 
-     
+        vm.setCurrentInstance(null);
+
+        virtualMachineDAO.saveOrUpdate(vm);
+
+
+    }
+
+    public void stopVirtualMachine(String name,boolean force) throws VirtualMachineNotFoundException, VirtualMachineIsNotEBSBackedException, VirtualMachineNotRunningException {
+
+        VirtualMachine vm = virtualMachineDAO.findByName(name);
+        if (vm == null) {
+            throw new VirtualMachineNotFoundException(name);
+        }
+
+        if(!vm.getIsEBSRootDevice())
+            throw new VirtualMachineIsNotEBSBackedException(vm);
+
+        Integer state = getVirtualMachineStatus(name);
+        if (state ==null || state!=INSTANCE_STATE_RUNNING) {
+            throw new VirtualMachineNotRunningException(name);
+
+        }
+
+        ec2.stopInstances(new StopInstancesRequest().withInstanceIds(vm.getCurrentInstance()).withForce(force));
+        
 
     }
 
@@ -987,7 +1093,7 @@ public class RainEngine extends BaseEngine {
         try {
 
             ArrayList<Instance> instances = new ArrayList<Instance>();
-           DescribeInstancesResult result= ec2.describeInstances();
+            DescribeInstancesResult result = ec2.describeInstances();
 
             for (Reservation r : result.getReservations()) {
                 instances.addAll(r.getInstances());
@@ -996,16 +1102,17 @@ public class RainEngine extends BaseEngine {
             for (VirtualMachine vm : vms) {
                 VirtualMachineInfo info = new VirtualMachineInfo();
                 info.setVirtualMachine(vm);
+
                 list.add(info);
                 if (vm.getCurrentInstance() != null) {
                     Iterator<Instance> it = instances.iterator();
                     while (it.hasNext()) {
                         Instance instance = it.next();
-
+                        info.setCurrentState(instance.getState().getCode());
                         if (instance.getInstanceId().equals(
                                 vm.getCurrentInstance())
-                                && instance.getState().getName().equals(InstanceStateName.Running.toString())) {
-                            Calendar cal=Calendar.getInstance();
+                                && (instance.getState().getCode()==INSTANCE_STATE_RUNNING || instance.getState().getCode()==INSTANCE_STATE_STOPPED)) {
+                            Calendar cal = Calendar.getInstance();
                             cal.setTime(instance.getLaunchTime());
                             info.setStartTime(cal);
                             info.setCurrentAvailabilityZone(instance.getPlacement().getAvailabilityZone());
@@ -1024,7 +1131,8 @@ public class RainEngine extends BaseEngine {
             if (names == null) {
                 for (Instance instance : instances) {
                     VirtualMachineInfo info = new VirtualMachineInfo();
-                    Calendar cal=Calendar.getInstance();
+                     info.setCurrentState(instance.getState().getCode());
+                    Calendar cal = Calendar.getInstance();
                     cal.setTime(instance.getLaunchTime());
                     info.setStartTime(cal);
                     info.setCurrentAvailabilityZone(instance.getPlacement().getAvailabilityZone());
@@ -1055,10 +1163,10 @@ public class RainEngine extends BaseEngine {
 
     public String createSnapshotById(String volumeId) {
 
-        
-            CreateSnapshotResult result = ec2.createSnapshot(new CreateSnapshotRequest().withVolumeId(volumeId));
-            return result.getSnapshot().getSnapshotId();
-        
+
+        CreateSnapshotResult result = ec2.createSnapshot(new CreateSnapshotRequest().withVolumeId(volumeId));
+        return result.getSnapshot().getSnapshotId();
+
 
     }
 
@@ -1106,7 +1214,7 @@ public class RainEngine extends BaseEngine {
         }
 
         DescribeSnapshotsResult descriptionResult = ec2.describeSnapshots();
-       
+
         List<SnapshotDescription> result = new ArrayList<SnapshotDescription>();
 
         for (Snapshot i : descriptionResult.getSnapshots()) {
@@ -1115,7 +1223,7 @@ public class RainEngine extends BaseEngine {
                 SnapshotDescription description = new SnapshotDescription();
                 description.setSnapshotId(i.getSnapshotId());
                 description.setPercentComplete(i.getProgress());
-                Calendar cal=Calendar.getInstance();
+                Calendar cal = Calendar.getInstance();
                 cal.setTime(i.getStartTime());
                 description.setSnapshotTime(cal);
                 description.setStatus(i.getState());
@@ -1149,37 +1257,37 @@ public class RainEngine extends BaseEngine {
 
         List<VolumeDescription> volumes = new ArrayList<VolumeDescription>();
 
-       
-            DescribeVolumesResult result= ec2.describeVolumes();
 
-            for (com.amazonaws.services.ec2.model.Volume i : result.getVolumes()) {
-                if (volumeId == null || i.getVolumeId().equals(volumeId)) {
-                    VolumeDescription description = new VolumeDescription();
-                    Volume namedVolume = volumeDAO.findByVolumeId(i.getVolumeId());
-                    description.setVolume(namedVolume);
-                    description.setVolumeId(i.getVolumeId());
-                    Calendar cal = Calendar.getInstance();
-                    cal.setTime(i.getCreateTime());
-                    description.setCreateTime(cal);
-                    description.setAvailabilityZone(i.getAvailabilityZone());
-                    description.setStatus(i.getState());
-                    description.setSize(i.getSize());
-                    VolumeAttachment attachment = (i.getAttachments() == null || i.getAttachments().size() == 0) ? null : i.getAttachments().get(0);
-                    if (attachment != null) {
-                        Calendar cal2 = Calendar.getInstance();
-                        cal2.setTime(attachment.getAttachTime());
-                        description.setAttachTime(cal2);
-                        description.setAttachedInstanceId(attachment.getInstanceId());
-                        description.setAttachedInstance(virtualMachineDAO.findByInstanceId(attachment.getInstanceId()));
-                        description.setAttachedDevice(attachment.getDevice());
+        DescribeVolumesResult result = ec2.describeVolumes();
 
-                    }
-                    volumes.add(description);
+        for (com.amazonaws.services.ec2.model.Volume i : result.getVolumes()) {
+            if (volumeId == null || i.getVolumeId().equals(volumeId)) {
+                VolumeDescription description = new VolumeDescription();
+                Volume namedVolume = volumeDAO.findByVolumeId(i.getVolumeId());
+                description.setVolume(namedVolume);
+                description.setVolumeId(i.getVolumeId());
+                Calendar cal = Calendar.getInstance();
+                cal.setTime(i.getCreateTime());
+                description.setCreateTime(cal);
+                description.setAvailabilityZone(i.getAvailabilityZone());
+                description.setStatus(i.getState());
+                description.setSize(i.getSize());
+                VolumeAttachment attachment = (i.getAttachments() == null || i.getAttachments().size() == 0) ? null : i.getAttachments().get(0);
+                if (attachment != null) {
+                    Calendar cal2 = Calendar.getInstance();
+                    cal2.setTime(attachment.getAttachTime());
+                    description.setAttachTime(cal2);
+                    description.setAttachedInstanceId(attachment.getInstanceId());
+                    description.setAttachedInstance(virtualMachineDAO.findByInstanceId(attachment.getInstanceId()));
+                    description.setAttachedDevice(attachment.getDevice());
 
                 }
-            }
+                volumes.add(description);
 
-     
+            }
+        }
+
+
 
         return volumes;
 
@@ -1194,9 +1302,9 @@ public class RainEngine extends BaseEngine {
             throw new VolumeNotFoundException(name);
         }
 
-        
-            checkVolumeAvailability(volume);
-       
+
+        checkVolumeAvailability(volume);
+
 
         Volume vol2 = volumeDAO.findByVolumeId(volume);
 
@@ -1219,8 +1327,9 @@ public class RainEngine extends BaseEngine {
 
         DescribeVolumesResult result = ec2.describeVolumes(new DescribeVolumesRequest().withVolumeIds(volume));
 
-        if(result.getVolumes().size()==0)
+        if (result.getVolumes().size() == 0) {
             throw new VolumeNotFoundException(volume);
+        }
 
     }
 
@@ -1228,32 +1337,34 @@ public class RainEngine extends BaseEngine {
             throws SnapshotNotFoundException {
 
 
-           DescribeSnapshotsResult result = ec2.describeSnapshots(new DescribeSnapshotsRequest().withSnapshotIds(snapshotId));
-           if(result.getSnapshots().size()==0)
-                throw new SnapshotNotFoundException(snapshotId);
-            
+        DescribeSnapshotsResult result = ec2.describeSnapshots(new DescribeSnapshotsRequest().withSnapshotIds(snapshotId));
+        if (result.getSnapshots().size() == 0) {
+            throw new SnapshotNotFoundException(snapshotId);
+        }
 
-            ec2.deleteSnapshot(new DeleteSnapshotRequest(snapshotId));
-       
+
+        ec2.deleteSnapshot(new DeleteSnapshotRequest(snapshotId));
+
 
     }
 
     public void deleteEC2Volume(String volumeId) throws VolumeNotFoundException {
 
-        
-            DescribeVolumesResult result = ec2.describeVolumes(new DescribeVolumesRequest().withVolumeIds(volumeId));
 
-            if(result.getVolumes().size()==0)
-                throw new VolumeNotFoundException(volumeId);
-            
+        DescribeVolumesResult result = ec2.describeVolumes(new DescribeVolumesRequest().withVolumeIds(volumeId));
 
-            ec2.deleteVolume(new DeleteVolumeRequest(volumeId));
-            Volume vol = volumeDAO.findByVolumeId(volumeId);
-            if (vol != null) {
-                volumeDAO.delete(vol);
-            }
+        if (result.getVolumes().size() == 0) {
+            throw new VolumeNotFoundException(volumeId);
+        }
 
-        
+
+        ec2.deleteVolume(new DeleteVolumeRequest(volumeId));
+        Volume vol = volumeDAO.findByVolumeId(volumeId);
+        if (vol != null) {
+            volumeDAO.delete(vol);
+        }
+
+
 
     }
 
@@ -1293,17 +1404,17 @@ public class RainEngine extends BaseEngine {
     }
 
     public void authorizeIPAddress(String ipAddress, String securityGroup,
-            String protocol, int startPort, int endPort) throws 
+            String protocol, int startPort, int endPort) throws
             SecurityGroupNotFoundException {
 
-       DescribeSecurityGroupsResult result = ec2.describeSecurityGroups(new DescribeSecurityGroupsRequest().withGroupNames(securityGroup));
-        if ( result.getSecurityGroups().size() == 0) {
+        DescribeSecurityGroupsResult result = ec2.describeSecurityGroups(new DescribeSecurityGroupsRequest().withGroupNames(securityGroup));
+        if (result.getSecurityGroups().size() == 0) {
             throw new SecurityGroupNotFoundException(securityGroup);
         }
 
-       IpPermission permission=new IpPermission().withIpProtocol(protocol).withFromPort(startPort).withToPort(endPort).withIpRanges(ipAddress);
+        IpPermission permission = new IpPermission().withIpProtocol(protocol).withFromPort(startPort).withToPort(endPort).withIpRanges(ipAddress);
 
-        AuthorizeSecurityGroupIngressRequest request=new AuthorizeSecurityGroupIngressRequest();
+        AuthorizeSecurityGroupIngressRequest request = new AuthorizeSecurityGroupIngressRequest();
         request.setGroupName(securityGroup);
         request.setIpPermissions(Collections.singletonList(permission));
 
@@ -1316,12 +1427,12 @@ public class RainEngine extends BaseEngine {
             SecurityGroupNotFoundException {
 
         DescribeSecurityGroupsResult result = ec2.describeSecurityGroups(new DescribeSecurityGroupsRequest().withGroupNames(securityGroup));
-        if (result.getSecurityGroups().size()==0) {
+        if (result.getSecurityGroups().size() == 0) {
             throw new SecurityGroupNotFoundException(securityGroup);
         }
-        IpPermission permission=new IpPermission().withIpProtocol(protocol).withFromPort(startPort).withToPort(endPort).withIpRanges(ipAddress);
+        IpPermission permission = new IpPermission().withIpProtocol(protocol).withFromPort(startPort).withToPort(endPort).withIpRanges(ipAddress);
 
-        RevokeSecurityGroupIngressRequest request=new RevokeSecurityGroupIngressRequest();
+        RevokeSecurityGroupIngressRequest request = new RevokeSecurityGroupIngressRequest();
         request.setGroupName(securityGroup);
         request.setIpPermissions(Collections.singletonList(permission));
         ec2.revokeSecurityGroupIngress(request);
@@ -1347,7 +1458,7 @@ public class RainEngine extends BaseEngine {
 
     }
 
-    public String[] getSecurityGroupNames()  {
+    public String[] getSecurityGroupNames() {
 
         DescribeSecurityGroupsResult result = ec2.describeSecurityGroups();
 
@@ -1418,11 +1529,11 @@ public class RainEngine extends BaseEngine {
                         // Remove the security permissions
 
 
-                        RevokeSecurityGroupIngressRequest revokeRequest=new RevokeSecurityGroupIngressRequest(d.getGroupName(),Collections.singletonList(p));
+                        RevokeSecurityGroupIngressRequest revokeRequest = new RevokeSecurityGroupIngressRequest(d.getGroupName(), Collections.singletonList(p));
 
                         ec2.revokeSecurityGroupIngress(revokeRequest);
                         p.setIpRanges(Collections.singleton(newIpRange));
-                        AuthorizeSecurityGroupIngressRequest authorizeRequest=new AuthorizeSecurityGroupIngressRequest(d.getGroupName(),Collections.singletonList(p));
+                        AuthorizeSecurityGroupIngressRequest authorizeRequest = new AuthorizeSecurityGroupIngressRequest(d.getGroupName(), Collections.singletonList(p));
 
                         ec2.authorizeSecurityGroupIngress(authorizeRequest);
                     }
@@ -1439,4 +1550,6 @@ public class RainEngine extends BaseEngine {
     public List<DynamicIpAddress> getDynamicIpAddresses() {
         return dynamicIPDAO.findAll();
     }
+
+
 }

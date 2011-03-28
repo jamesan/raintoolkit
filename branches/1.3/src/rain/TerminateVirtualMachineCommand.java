@@ -14,11 +14,15 @@ public class TerminateVirtualMachineCommand extends BaseCommand {
 	
 	@Argument(description="Virtual Machine Name",alias="n",required=true)
 	private String name;
+
+        @Argument(description="Force EBS-backed vm termination", alias="f", required=false)
+        private boolean forceEBSTermination;
+
 	public void run() {
 		
 		RainEngine engine=RainEngine.getInstance();
 		try {
-			engine.terminateVirtualMachine(name);
+			engine.terminateVirtualMachine(name,forceEBSTermination);
 			System.exit(0);
 			return;
 		} catch (VirtualMachineNotRunningException e) {
@@ -26,6 +30,9 @@ public class TerminateVirtualMachineCommand extends BaseCommand {
 		} catch (VirtualMachineNotFoundException e) {
 			System.err.println("Virtual machine not found: "+name);
 		}
+                catch(EBSVirtualMachineTerminateException e) {
+                    output.printError("Virtual machine is EBS-backed, use -f to force termination");
+                }
 		catch(RuntimeException e) {
 			System.err.println("Error terminating machine");
 			e.printStackTrace();

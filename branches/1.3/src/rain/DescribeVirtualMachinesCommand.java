@@ -60,12 +60,12 @@ public class DescribeVirtualMachinesCommand extends BaseCommand {
 				output.printValue("Uptime",String.format("%dd%02d:%02d", days, hours, mins));
 
 			}
+
+                        printValue("State",getStateName(i.getCurrentState()),null,"none");
 			printValue("DnsName",i.getCurrentDnsName(), null, "none");
 			printValue("InternalIpAddress", i.getCurrentPrivateIpAddress(), null, "none");
-			if(i.getStartTime()!=null)
-				printValue("InstanceId",i.getInstanceId(), null, "none");
-			else
-				output.printValue("InstanceId", "none");
+			printValue("InstanceId",i.getInstanceId(),null,"none");
+			
 
 			if (all) {
 				
@@ -148,5 +148,25 @@ public class DescribeVirtualMachinesCommand extends BaseCommand {
 			output.printValue(label, defaultValue);
 
 	}
+
+        private String getStateName(Integer code) {
+
+            if(code==0)
+                return "Pending";
+            if(code==16)
+                return "Running";
+            if(code==48)
+                return "Terminated";
+
+            if(code==64)
+                return "Stopping";
+
+            if(code==80)
+                return "Stopped";
+
+            return ""+code;
+
+           
+        }
 
 }

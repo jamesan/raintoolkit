@@ -18,7 +18,7 @@ public class VirtualMachineStatusCommand {
 		
 		RainEngine engine=RainEngine.getInstance();
 		
-		String ipAddress=engine.getVirtualMachineStatus(args[0]);
+		String ipAddress=engine.getVirtualMachineIPAddress(args[0]);
 		if(ipAddress==null) {
 			System.out.println("Virtual machine "+args[0]+" not running");
 			System.exit(1);
