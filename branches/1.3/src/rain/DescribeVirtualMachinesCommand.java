@@ -151,6 +151,9 @@ public class DescribeVirtualMachinesCommand extends BaseCommand {
 
         private String getStateName(Integer code) {
 
+           
+            if(code==null)
+                return "Not Running";
             if(code==0)
                 return "Pending";
             if(code==16)

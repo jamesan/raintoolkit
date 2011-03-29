@@ -258,7 +258,7 @@ public class RainEngine extends BaseEngine {
             VirtualMachineAlreadyRunningException,
             InconsistentAvailabilityZoneException,
             VolumeAlreadyAttachedException, AddressAlreadyAssignedException,
-            VolumeMountFailedException, AutoRunCommandFailedException,InstanceStoppingException {
+            VolumeMountFailedException, AutoRunCommandFailedException, InstanceStoppingException {
 
         VirtualMachine vm = virtualMachineDAO.findByName(name);
         if (vm == null) {
@@ -340,7 +340,7 @@ public class RainEngine extends BaseEngine {
                 instance = associateIpAddress(vm, instance);
             }
 
-            if (vm.getVolumes() != null ) {
+            if (vm.getVolumes() != null) {
                 // mount volumes
                 attachVolumes(vm);
                 instance = waitForPublicIpToBecomeAvailable(vm, instance);
@@ -507,8 +507,9 @@ public class RainEngine extends BaseEngine {
 
         List<Volume> volumes = vm.getVolumes();
 
-        if(volumes==null || volumes.size()==0)
+        if (volumes == null || volumes.size() == 0) {
             return;
+        }
 
         List<String> pendingVolumeIds = new ArrayList<String>();
         for (Volume vol : volumes) {
@@ -582,7 +583,7 @@ public class RainEngine extends BaseEngine {
 
         String availabilityZoneToCheck = availabilityZone;
         List<Volume> volumes = vm.getVolumes();
-        if (volumes != null && volumes.size()>0) {
+        if (volumes != null && volumes.size() > 0) {
 
             String[] volumeIds = new String[volumes.size()];
             for (int i = 0; i < volumes.size(); i++) {
@@ -632,13 +633,13 @@ public class RainEngine extends BaseEngine {
                 return availabilityZoneToCheck;
             }
             throw new RuntimeException(
-                "Code should never get into this path, this is a bug");
+                    "Code should never get into this path, this is a bug");
 
         }
 
         return availabilityZone;
 
-        
+
     }
 
     private boolean isInstanceRunning(String id) {
@@ -1024,7 +1025,7 @@ public class RainEngine extends BaseEngine {
 
     }
 
-    public void terminateVirtualMachine(String name,boolean forceEBSTermination)
+    public void terminateVirtualMachine(String name, boolean forceEBSTermination)
             throws VirtualMachineNotRunningException,
             VirtualMachineNotFoundException,
             EBSVirtualMachineTerminateException {
@@ -1034,12 +1035,13 @@ public class RainEngine extends BaseEngine {
             throw new VirtualMachineNotFoundException(name);
         }
 
-        if(vm.getIsEBSRootDevice() && ! forceEBSTermination)
+        if (vm.getIsEBSRootDevice() && !forceEBSTermination) {
             throw new EBSVirtualMachineTerminateException(vm);
+        }
 
 
-       Integer state = getVirtualMachineStatus(name);
-        if (state !=null && state!=INSTANCE_STATE_STOPPED && state!=INSTANCE_STATE_RUNNING) {
+        Integer state = getVirtualMachineStatus(name);
+        if (state != null && state != INSTANCE_STATE_STOPPED && state != INSTANCE_STATE_RUNNING) {
             throw new VirtualMachineNotRunningException(name);
         }
 
@@ -1053,24 +1055,25 @@ public class RainEngine extends BaseEngine {
 
     }
 
-    public void stopVirtualMachine(String name,boolean force) throws VirtualMachineNotFoundException, VirtualMachineIsNotEBSBackedException, VirtualMachineNotRunningException {
+    public void stopVirtualMachine(String name, boolean force) throws VirtualMachineNotFoundException, VirtualMachineIsNotEBSBackedException, VirtualMachineNotRunningException {
 
         VirtualMachine vm = virtualMachineDAO.findByName(name);
         if (vm == null) {
             throw new VirtualMachineNotFoundException(name);
         }
 
-        if(!vm.getIsEBSRootDevice())
+        if (!vm.getIsEBSRootDevice()) {
             throw new VirtualMachineIsNotEBSBackedException(vm);
+        }
 
         Integer state = getVirtualMachineStatus(name);
-        if (state ==null || state!=INSTANCE_STATE_RUNNING) {
+        if (state == null || state != INSTANCE_STATE_RUNNING) {
             throw new VirtualMachineNotRunningException(name);
 
         }
 
         ec2.stopInstances(new StopInstancesRequest().withInstanceIds(vm.getCurrentInstance()).withForce(force));
-        
+
 
     }
 
@@ -1108,21 +1111,26 @@ public class RainEngine extends BaseEngine {
                     Iterator<Instance> it = instances.iterator();
                     while (it.hasNext()) {
                         Instance instance = it.next();
-                        info.setCurrentState(instance.getState().getCode());
+
                         if (instance.getInstanceId().equals(
-                                vm.getCurrentInstance())
-                                && (instance.getState().getCode()==INSTANCE_STATE_RUNNING || instance.getState().getCode()==INSTANCE_STATE_STOPPED)) {
-                            Calendar cal = Calendar.getInstance();
-                            cal.setTime(instance.getLaunchTime());
-                            info.setStartTime(cal);
-                            info.setCurrentAvailabilityZone(instance.getPlacement().getAvailabilityZone());
-                            info.setCurrentDnsName(instance.getPublicDnsName());
-                            info.setInstanceId(instance.getInstanceId());
-                            info.setCurrentPrivateIpAddress(instance.getPrivateIpAddress());
-                            it.remove();
+                                vm.getCurrentInstance())) {
 
+
+                            info.setCurrentState(instance.getState().getCode());
+
+
+                            if ((instance.getState().getCode() == INSTANCE_STATE_RUNNING || instance.getState().getCode() == INSTANCE_STATE_STOPPED || instance.getState().getCode() == INSTANCE_STATE_STOPPING)) {
+                                Calendar cal = Calendar.getInstance();
+                                cal.setTime(instance.getLaunchTime());
+                                info.setStartTime(cal);
+                                info.setCurrentAvailabilityZone(instance.getPlacement().getAvailabilityZone());
+                                info.setCurrentDnsName(instance.getPublicDnsName());
+                                info.setInstanceId(instance.getInstanceId());
+                                info.setCurrentPrivateIpAddress(instance.getPrivateIpAddress());
+                                it.remove();
+
+                            }
                         }
-
                     }
                 }
             }
@@ -1131,7 +1139,7 @@ public class RainEngine extends BaseEngine {
             if (names == null) {
                 for (Instance instance : instances) {
                     VirtualMachineInfo info = new VirtualMachineInfo();
-                     info.setCurrentState(instance.getState().getCode());
+                    info.setCurrentState(instance.getState().getCode());
                     Calendar cal = Calendar.getInstance();
                     cal.setTime(instance.getLaunchTime());
                     info.setStartTime(cal);
@@ -1550,6 +1558,4 @@ public class RainEngine extends BaseEngine {
     public List<DynamicIpAddress> getDynamicIpAddresses() {
         return dynamicIPDAO.findAll();
     }
-
-
 }
