@@ -33,6 +33,8 @@ import com.amazonaws.services.ec2.model.DescribeSecurityGroupsRequest;
 import com.amazonaws.services.ec2.model.DescribeSecurityGroupsResult;
 import com.amazonaws.services.ec2.model.DescribeSnapshotsRequest;
 import com.amazonaws.services.ec2.model.DescribeSnapshotsResult;
+import com.amazonaws.services.ec2.model.DescribeSubnetsRequest;
+import com.amazonaws.services.ec2.model.DescribeSubnetsResult;
 import com.amazonaws.services.ec2.model.DescribeVolumesRequest;
 import com.amazonaws.services.ec2.model.DescribeVolumesResult;
 import com.amazonaws.services.ec2.model.DetachVolumeRequest;
@@ -52,6 +54,7 @@ import com.amazonaws.services.ec2.model.Snapshot;
 import com.amazonaws.services.ec2.model.StartInstancesRequest;
 import com.amazonaws.services.ec2.model.StartInstancesResult;
 import com.amazonaws.services.ec2.model.StopInstancesRequest;
+import com.amazonaws.services.ec2.model.Subnet;
 import com.amazonaws.services.ec2.model.TerminateInstancesRequest;
 import com.amazonaws.services.ec2.model.VolumeAttachment;
 import java.io.File;
@@ -150,7 +153,7 @@ public class RainEngine extends BaseEngine {
             KernelNotFoundException, InstanceNotFoundException,
             AvailabilityZoneNotFoundException,
             StaticIpAddressNotFoundException,
-            IpAddressAlreadyAssignedException, KeyPairNotFoundException, ImageIsNotKernelException {
+            IpAddressAlreadyAssignedException, KeyPairNotFoundException, ImageIsNotKernelException, SubNetNotFoundException, InconsistentSubNetAvailabilityZoneException {
 
         if (checkAMIExists(vm.getImage()) == null) {
             throw new AMIDoesNotExistException(vm.getImage());
@@ -220,7 +223,7 @@ public class RainEngine extends BaseEngine {
                 if (vm.getCurrentInstance() != null
                         && i.getInstanceId().equals(vm.getCurrentInstance())
                         && i.getState().getName().equals(InstanceStateName.Running.toString())) {
-                    return i.getPublicDnsName();
+                    return getPublicDnsNameOrIpAddress(i);
                 }
 
             }
@@ -302,7 +305,7 @@ public class RainEngine extends BaseEngine {
                 configuration.setKernelId(vm.getKernel());
                 configuration.setKeyName(vm.getKeypair());
                 configuration.setRamdiskId(vm.getRamdisk());
-                if (vm.getSecurityGroup() != null) {
+                if (vm.getSecurityGroup() != null && vm.getVpcSubNet()==null) {
                     String[] tmp = vm.getSecurityGroup().split(",");
                     configuration.setSecurityGroupIds(Arrays.asList(tmp));
 
@@ -318,6 +321,11 @@ public class RainEngine extends BaseEngine {
                     configuration.setUserData(vm.getUserData());
                 }
 
+                configuration.setSubnetId(vm.getVpcSubNet());
+                configuration.setPrivateIpAddress(vm.getPrivateIpAddress());
+                if(vm.getIsEBSRootDevice())
+                    configuration.setDisableApiTermination(Boolean.TRUE);
+                
 
 
                 RunInstancesResult result = ec2.runInstances(configuration);
@@ -353,7 +361,7 @@ public class RainEngine extends BaseEngine {
                 executeAutoRuncommand(vm, instance);
             }
 
-            return instance.getPublicDnsName();
+            return getPublicDnsNameOrIpAddress(instance);
 
         } catch (Exception e) {
             throw new RuntimeException(e);
@@ -373,12 +381,20 @@ public class RainEngine extends BaseEngine {
 
     }
 
+    private String getPublicDnsNameOrIpAddress(Instance instance) {
+
+        if(instance.getPublicDnsName()!=null && !instance.getPublicDnsName().equals(""))
+            return instance.getPublicDnsName();
+
+        return instance.getPublicIpAddress();
+
+    }
     private Instance waitForPublicIpToBecomeAvailable(VirtualMachine vm,
             Instance instance) {
-
+        String publicAddress=null;
         do {
-            if (instance.getPublicDnsName() == null
-                    || instance.getPublicDnsName().equals("")) {
+             publicAddress=getPublicDnsNameOrIpAddress(instance);
+            if (publicAddress==null || publicAddress.equals("")) {
                 logger.fine("Waiting for ip address to become available...");
                 try {
                     Thread.sleep(DEFAULT_POLL_INTERVAL);
@@ -388,8 +404,7 @@ public class RainEngine extends BaseEngine {
                 instance = refreshInstanceInformation(instance);
 
             }
-        } while (instance.getPublicDnsName() == null
-                || instance.getPublicDnsName().equals(""));
+        } while (publicAddress==null || publicAddress.equals(""));
 
         return instance;
 
@@ -399,12 +414,22 @@ public class RainEngine extends BaseEngine {
         // Associates the ip address and waits until the instance assumes the
         // address
 
-        ec2.associateAddress(new AssociateAddressRequest(instance.getInstanceId(), vm.getStaticIpAddress()));
+        if(vm.getVpcSubNet()!=null) {
+            // Need to get the allocation id first for vpc elastic ips
+            DescribeAddressesResult result=ec2.describeAddresses(new DescribeAddressesRequest().withPublicIps(vm.getStaticIpAddress()));
+            if(result.getAddresses().size()==0)
+                throw new RuntimeException("Static ip address not found: "+vm.getStaticIpAddress());
+
+            ec2.associateAddress(new AssociateAddressRequest().withInstanceId(instance.getInstanceId()).withAllocationId(result.getAddresses().get(0).getAllocationId()));
+
+        }
+        else
+            ec2.associateAddress(new AssociateAddressRequest(instance.getInstanceId(), vm.getStaticIpAddress()));
 
         String instanceAddress;
         do {
             instance = refreshInstanceInformation(instance);
-            instanceAddress = instance.getPublicDnsName();
+            instanceAddress = getPublicDnsNameOrIpAddress(instance);
             instanceAddress = InetAddress.getByName(instanceAddress).getHostAddress();
             if (!instanceAddress.equals(vm.getStaticIpAddress())) {
                 try {
@@ -452,6 +477,8 @@ public class RainEngine extends BaseEngine {
     public int executeCommand(VirtualMachine vm, Instance currentInstance,
             String command) throws IOException, InterruptedException {
 
+        String instanceAddress=getPublicDnsNameOrIpAddress(currentInstance);
+
         String[] cmdLine = new String[]{
             "ssh",
             "-o",
@@ -459,7 +486,7 @@ public class RainEngine extends BaseEngine {
             "-i",
             glue_home + File.separatorChar + "keys" + File.separatorChar
             + vm.getKeypair() + ".identity",
-            "root@" + currentInstance.getPublicDnsName(), command};
+            "root@" + instanceAddress, command};
 
         String cmd = "";
         for (String s : cmdLine) {
@@ -815,7 +842,7 @@ public class RainEngine extends BaseEngine {
             AMIDoesNotExistException, InstanceNotFoundException,
             AvailabilityZoneNotFoundException,
             StaticIpAddressNotFoundException,
-            IpAddressAlreadyAssignedException, KeyPairNotFoundException, ImageIsNotKernelException {
+            IpAddressAlreadyAssignedException, KeyPairNotFoundException, ImageIsNotKernelException, SubNetNotFoundException, InconsistentSubNetAvailabilityZoneException {
         modifyVirtualMachine(vm, newName, false);
     }
 
@@ -826,7 +853,7 @@ public class RainEngine extends BaseEngine {
             AMIDoesNotExistException, InstanceNotFoundException,
             AvailabilityZoneNotFoundException,
             StaticIpAddressNotFoundException,
-            IpAddressAlreadyAssignedException, KeyPairNotFoundException, ImageIsNotKernelException {
+            IpAddressAlreadyAssignedException, KeyPairNotFoundException, ImageIsNotKernelException, SubNetNotFoundException, InconsistentSubNetAvailabilityZoneException {
 
         VirtualMachine current;
 
@@ -857,9 +884,9 @@ public class RainEngine extends BaseEngine {
             Image image = checkImage(vm.getImage());
             current.setImage(vm.getImage());
             if (image.getRootDeviceType().equals("ebs")) {
-                vm.setIsEBSRootDevice(true);
+                current.setIsEBSRootDevice(true);
             } else {
-                vm.setIsEBSRootDevice(false);
+                current.setIsEBSRootDevice(false);
             }
         }
 
@@ -911,6 +938,15 @@ public class RainEngine extends BaseEngine {
         if (vm.getUserData() != null) {
             current.setUserData(vm.getUserData());
         }
+
+        if(vm.getVpcSubNet()!=null) {
+            checkVpcSubNet(vm);
+            current.setVpcSubNet(vm.getVpcSubNet());
+        }
+        //TODO: check if the private ip really belongs to the subnet
+        if(vm.getPrivateIpAddress()!=null)
+            current.setPrivateIpAddress(vm.getPrivateIpAddress());
+
 
         virtualMachineDAO.saveOrUpdate(current);
 
@@ -1124,7 +1160,7 @@ public class RainEngine extends BaseEngine {
                                 cal.setTime(instance.getLaunchTime());
                                 info.setStartTime(cal);
                                 info.setCurrentAvailabilityZone(instance.getPlacement().getAvailabilityZone());
-                                info.setCurrentDnsName(instance.getPublicDnsName());
+                                info.setCurrentDnsName(getPublicDnsNameOrIpAddress(instance));
                                 info.setInstanceId(instance.getInstanceId());
                                 info.setCurrentPrivateIpAddress(instance.getPrivateIpAddress());
                                 it.remove();
@@ -1557,5 +1593,22 @@ public class RainEngine extends BaseEngine {
 
     public List<DynamicIpAddress> getDynamicIpAddresses() {
         return dynamicIPDAO.findAll();
+    }
+
+    private void checkVpcSubNet(VirtualMachine vm) throws SubNetNotFoundException, InconsistentSubNetAvailabilityZoneException {
+
+        DescribeSubnetsResult result=ec2.describeSubnets(new DescribeSubnetsRequest().withSubnetIds(vm.getVpcSubNet()));
+
+        if(result.getSubnets().isEmpty())
+            throw new SubNetNotFoundException(vm.getVpcSubNet());
+
+        Subnet sn=result.getSubnets().get(0);
+        if(vm.getAvailabilityZone()!=null && !sn.getAvailabilityZone().equals(vm.getAvailabilityZone()))
+            throw new InconsistentSubNetAvailabilityZoneException(vm.getVpcSubNet());
+
+     // TODO: compare if machine private ip address really is in the subnet
+
+
+
     }
 }

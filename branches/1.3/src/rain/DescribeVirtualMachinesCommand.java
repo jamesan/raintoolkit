@@ -78,6 +78,8 @@ public class DescribeVirtualMachinesCommand extends BaseCommand {
 				printValue("Ramdisk",vm!=null?vm.getRamdisk():null, null, "default");
 				printInstanceType(vm);
 				printValue("StaticIpAddress",vm!=null?vm.getStaticIpAddress():null, null, "none");
+                                printValue("Subnet",vm!=null?vm.getVpcSubNet():null,null,"none");
+                                printValue("PrivateIpAddress",vm!=null?vm.getPrivateIpAddress():null,null,"none");
 				printSecurityGroups(vm);
 				printValue("UserData",vm!=null?vm.getUserData():null, null, "none");
 				printValue("AutoRunCommand",vm!=null?vm.getAutoRunCommand():null,null,"none");

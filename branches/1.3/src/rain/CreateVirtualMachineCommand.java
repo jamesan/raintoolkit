@@ -53,6 +53,14 @@ public class CreateVirtualMachineCommand extends BaseCommand {
 	private String instanceType;
 	@Argument(description="AutoRun Command", alias="l")
 	private String autoRunCommand;
+
+        @Argument(description="Amazon VPC subnet id")
+        private String vpcSubNet;
+
+        @Argument(description = "Amazon VPC private ip address", alias="p")
+        private String privateIpAddress;
+
+
 	
 	
 
@@ -83,6 +91,10 @@ public class CreateVirtualMachineCommand extends BaseCommand {
 			vm.setInstanceType(VirtualMachine.InstanceType.valueOf(instanceType));
 		vm.setKeypair(key);
 		vm.setAutoRunCommand(autoRunCommand);
+                vm.setVpcSubNet(vpcSubNet);
+                
+                vm.setPrivateIpAddress(privateIpAddress);
+                
 		
 		RainEngine engine=RainEngine.getInstance();
 		try {
@@ -129,6 +141,14 @@ public class CreateVirtualMachineCommand extends BaseCommand {
 		}
                 catch(ImageIsNotKernelException e) {
                     output.printError("Image "+e.getKernel()+" is not a kernel image");
+                }
+                catch(SubNetNotFoundException e) {
+                    output.printError("Subnet "+vm.getVpcSubNet()+" does not exist.");
+
+                }
+                catch(InconsistentSubNetAvailabilityZoneException e) {
+                    output.printError("Subnet "+vm.getVpcSubNet()+" availability zone is not the same as the virtual machine availability zone");
+
                 }
 		
 		System.exit(1);

@@ -4,13 +4,17 @@
  */
 package rain;
 
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
 public class VirtualMachineStatusCommand {
 
 	/**
 	 * @param args
 	 */
 	public static void main(String[] args) {
-		
+		 Logger rootLogger = Logger.getLogger("");
+                 rootLogger.setLevel(Level.SEVERE);
 		if(args.length<1) {
 			System.err.println("Usage: VirtualMachineStatusCommand <virtual machine name>");
 			return;
