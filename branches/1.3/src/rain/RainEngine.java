@@ -79,6 +79,8 @@ import java.util.logging.Logger;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.util.Calendar;
+import java.util.HashMap;
+import java.util.Map;
 
 public class RainEngine extends BaseEngine {
 
@@ -305,7 +307,7 @@ public class RainEngine extends BaseEngine {
                 configuration.setKernelId(vm.getKernel());
                 configuration.setKeyName(vm.getKeypair());
                 configuration.setRamdiskId(vm.getRamdisk());
-                if (vm.getSecurityGroup() != null && vm.getVpcSubNet()==null) {
+                if (vm.getSecurityGroup() != null && vm.getVpcSubNet() == null) {
                     String[] tmp = vm.getSecurityGroup().split(",");
                     configuration.setSecurityGroupIds(Arrays.asList(tmp));
 
@@ -323,9 +325,10 @@ public class RainEngine extends BaseEngine {
 
                 configuration.setSubnetId(vm.getVpcSubNet());
                 configuration.setPrivateIpAddress(vm.getPrivateIpAddress());
-                if(vm.getIsEBSRootDevice())
+                if (vm.getIsEBSRootDevice()) {
                     configuration.setDisableApiTermination(Boolean.TRUE);
-                
+                }
+
 
 
                 RunInstancesResult result = ec2.runInstances(configuration);
@@ -383,18 +386,20 @@ public class RainEngine extends BaseEngine {
 
     private String getPublicDnsNameOrIpAddress(Instance instance) {
 
-        if(instance.getPublicDnsName()!=null && !instance.getPublicDnsName().equals(""))
+        if (instance.getPublicDnsName() != null && !instance.getPublicDnsName().equals("")) {
             return instance.getPublicDnsName();
+        }
 
         return instance.getPublicIpAddress();
 
     }
+
     private Instance waitForPublicIpToBecomeAvailable(VirtualMachine vm,
             Instance instance) {
-        String publicAddress=null;
+        String publicAddress = null;
         do {
-             publicAddress=getPublicDnsNameOrIpAddress(instance);
-            if (publicAddress==null || publicAddress.equals("")) {
+            publicAddress = getPublicDnsNameOrIpAddress(instance);
+            if (publicAddress == null || publicAddress.equals("")) {
                 logger.fine("Waiting for ip address to become available...");
                 try {
                     Thread.sleep(DEFAULT_POLL_INTERVAL);
@@ -404,7 +409,7 @@ public class RainEngine extends BaseEngine {
                 instance = refreshInstanceInformation(instance);
 
             }
-        } while (publicAddress==null || publicAddress.equals(""));
+        } while (publicAddress == null || publicAddress.equals(""));
 
         return instance;
 
@@ -414,17 +419,18 @@ public class RainEngine extends BaseEngine {
         // Associates the ip address and waits until the instance assumes the
         // address
 
-        if(vm.getVpcSubNet()!=null) {
+        if (vm.getVpcSubNet() != null) {
             // Need to get the allocation id first for vpc elastic ips
-            DescribeAddressesResult result=ec2.describeAddresses(new DescribeAddressesRequest().withPublicIps(vm.getStaticIpAddress()));
-            if(result.getAddresses().size()==0)
-                throw new RuntimeException("Static ip address not found: "+vm.getStaticIpAddress());
+            DescribeAddressesResult result = ec2.describeAddresses(new DescribeAddressesRequest().withPublicIps(vm.getStaticIpAddress()));
+            if (result.getAddresses().size() == 0) {
+                throw new RuntimeException("Static ip address not found: " + vm.getStaticIpAddress());
+            }
 
             ec2.associateAddress(new AssociateAddressRequest().withInstanceId(instance.getInstanceId()).withAllocationId(result.getAddresses().get(0).getAllocationId()));
 
-        }
-        else
+        } else {
             ec2.associateAddress(new AssociateAddressRequest(instance.getInstanceId(), vm.getStaticIpAddress()));
+        }
 
         String instanceAddress;
         do {
@@ -477,7 +483,7 @@ public class RainEngine extends BaseEngine {
     public int executeCommand(VirtualMachine vm, Instance currentInstance,
             String command) throws IOException, InterruptedException {
 
-        String instanceAddress=getPublicDnsNameOrIpAddress(currentInstance);
+        String instanceAddress = getPublicDnsNameOrIpAddress(currentInstance);
 
         String[] cmdLine = new String[]{
             "ssh",
@@ -538,41 +544,66 @@ public class RainEngine extends BaseEngine {
             return;
         }
 
+        String[] volumeIds = new String[volumes.size()];
+        for (int i = 0; i < volumeIds.length; i++) {
+            volumeIds[i] = volumes.get(i).getVolumeId();
+        }
+
+        DescribeVolumesResult result = ec2.describeVolumes(new DescribeVolumesRequest().withVolumeIds(volumeIds));
+        Map<String, com.amazonaws.services.ec2.model.Volume> volumeMap = new HashMap<String, com.amazonaws.services.ec2.model.Volume>();
+        for (com.amazonaws.services.ec2.model.Volume v : result.getVolumes()) {
+            volumeMap.put(v.getVolumeId(), v);
+        }
+
+
         List<String> pendingVolumeIds = new ArrayList<String>();
         for (Volume vol : volumes) {
+
+            if (volumeMap.get(vol.getVolumeId()) == null) {
+                throw new RuntimeException("Volume not found: " + vol.getVolumeId());
+            }
+            List<VolumeAttachment> attachments = volumeMap.get(vol.getVolumeId()).getAttachments();
+            if (attachments != null && attachments.size() > 0) {
+                if (attachments.get(0).getInstanceId().equals(vm.getCurrentInstance())) {
+                    logger.fine("Skipping attachment of volume " + vol.getName() + " as it is already attached");
+                    continue; // volume already attached to instance
+                }
+            }
 
             ec2.attachVolume(new AttachVolumeRequest(vol.getVolumeId(), vm.getCurrentInstance(), vol.getDevice()));
             pendingVolumeIds.add(vol.getVolumeId());
 
         }
 
-        logger.fine("Waiting for volumes to attach...");
-        do {
+        if (pendingVolumeIds.size() > 0) {
+            logger.fine("Waiting for volumes to attach...");
+            do {
 
-            DescribeVolumesResult result = ec2.describeVolumes(new DescribeVolumesRequest(pendingVolumeIds));
-            for (com.amazonaws.services.ec2.model.Volume v : result.getVolumes()) {
+                result = ec2.describeVolumes(new DescribeVolumesRequest(pendingVolumeIds));
+                for (com.amazonaws.services.ec2.model.Volume v : result.getVolumes()) {
 
-                List<VolumeAttachment> attachments = v.getAttachments();
-                if (attachments.size() > 0) {
-                    for (VolumeAttachment att : attachments) {
-                        if (att.getState().equals("attached")) {
-                            logger.fine("Volume " + v.getVolumeId()
-                                    + " attached");
-                            pendingVolumeIds.remove(v.getVolumeId());
+                    List<VolumeAttachment> attachments = v.getAttachments();
+                    if (attachments.size() > 0) {
+                        for (VolumeAttachment att : attachments) {
+                            if (att.getState().equals("attached")) {
+                                logger.fine("Volume " + v.getVolumeId()
+                                        + " attached");
+                                pendingVolumeIds.remove(v.getVolumeId());
+                            }
                         }
+                    }
+
+                }
+                if (pendingVolumeIds.size() > 0) {
+                    try {
+                        logger.fine("Sleeping...");
+                        Thread.sleep(DEFAULT_POLL_INTERVAL);
+                    } catch (InterruptedException e) {
                     }
                 }
 
-            }
-            if (pendingVolumeIds.size() > 0) {
-                try {
-                    logger.fine("Sleeping...");
-                    Thread.sleep(DEFAULT_POLL_INTERVAL);
-                } catch (InterruptedException e) {
-                }
-            }
-
-        } while (pendingVolumeIds.size() > 0);
+            } while (pendingVolumeIds.size() > 0);
+        }
 
         logger.fine("All volumes attached");
     }
@@ -617,51 +648,56 @@ public class RainEngine extends BaseEngine {
                 volumeIds[i] = volumes.get(i).getVolumeId();
             }
 
-            for (int t = 0; t < MAX_VOLUME_DETACH_RETRIES + 1; t++) {
-                DescribeVolumesResult result = ec2.describeVolumes(new DescribeVolumesRequest(Arrays.asList(volumeIds)));
+            int t = 0;
+            DescribeVolumesResult result = ec2.describeVolumes(new DescribeVolumesRequest(Arrays.asList(volumeIds)));
+            logger.fine("Describing volumes, result = " + result);
 
-                for (int i = 0; i < result.getVolumes().size(); i++) {
-                    com.amazonaws.services.ec2.model.Volume info = result.getVolumes().get(i);
-                    if (availabilityZoneToCheck == null) {
-                        availabilityZoneToCheck = info.getAvailabilityZone();
+            for (int i = 0; i < result.getVolumes().size(); i++) {
+                com.amazonaws.services.ec2.model.Volume info = result.getVolumes().get(i);
+                if (availabilityZoneToCheck == null) {
+                    availabilityZoneToCheck = info.getAvailabilityZone();
+                }
+                if (!availabilityZoneToCheck.equals(info.getAvailabilityZone())) {
+                    throw new InconsistentAvailabilityZoneException();
+                }
+                List<VolumeAttachment> attachments = info.getAttachments();
+
+                if (attachments != null && attachments.size() > 0) {
+                    logger.fine("Found attachment: " + attachments);
+                    if(attachments.get(0).getInstanceId().equals(vm.getCurrentInstance())) {
+                        logger.fine("Volume "+info.getVolumeId()+" is already attached");
+                        continue;
                     }
-                    if (!availabilityZoneToCheck.equals(info.getAvailabilityZone())) {
-                        throw new InconsistentAvailabilityZoneException();
-                    }
-                    List<VolumeAttachment> attachments = info.getAttachments();
-                    if (attachments != null && attachments.size() > 0) {
-
-                        // Sometimes a volume can get struck in EC2, attached to
-                        // an instance that is no longer running
-                        // If we detect that this is the case, then we force the
-                        // volume to be detached and repeat the check
-                        VolumeAttachment attachment = attachments.get(0);
-                        String attachedInstanceId = attachment.getInstanceId();
-                        if (isInstanceRunning(attachedInstanceId)) {
-                            throw new VolumeAlreadyAttachedException(volumes.get(i));
-                        } else if (t < MAX_VOLUME_DETACH_RETRIES) {
-                            DetachVolumeRequest detachRequest = new DetachVolumeRequest(info.getVolumeId());
-                            detachRequest.setForce(Boolean.TRUE);
-                            detachRequest.setInstanceId(attachment.getInstanceId());
-
-                            ec2.detachVolume(detachRequest);
-                            try {
-                                Thread.sleep(DEFAULT_POLL_INTERVAL);
-                            } catch (InterruptedException e) {
-                            }
-                            break;
-                        } else {
-                            throw new VolumeAlreadyAttachedException(volumes.get(i));
+                    // Sometimes a volume can get struck in EC2, attached to
+                    // an instance that is no longer running
+                    // If we detect that this is the case, then we force the
+                    // volume to be detached and repeat the check
+                    VolumeAttachment attachment = attachments.get(0);
+                    String attachedInstanceId = attachment.getInstanceId();
+                    if (isInstanceRunning(attachedInstanceId)) {
+                        throw new VolumeAlreadyAttachedException(volumes.get(i));
+                    } else if (t < MAX_VOLUME_DETACH_RETRIES) {
+                        DetachVolumeRequest detachRequest = new DetachVolumeRequest(info.getVolumeId());
+                        detachRequest.setForce(Boolean.TRUE);
+                        detachRequest.setInstanceId(attachment.getInstanceId());
+                        logger.fine("Asking for volume to be detached: " + detachRequest);
+                        ec2.detachVolume(detachRequest);
+                        try {
+                            Thread.sleep(DEFAULT_POLL_INTERVAL);
+                        } catch (InterruptedException e) {
                         }
-
+                        i=i-1; // DANGEROUS!!!!! makes the loop pass this volume once again
+                        t=t+1;
+                    } else {
+                        throw new VolumeAlreadyAttachedException(volumes.get(i));
                     }
 
                 }
-                return availabilityZoneToCheck;
-            }
-            throw new RuntimeException(
-                    "Code should never get into this path, this is a bug");
 
+
+                
+            }
+            return availabilityZoneToCheck;
         }
 
         return availabilityZone;
@@ -695,7 +731,8 @@ public class RainEngine extends BaseEngine {
             DescribeAddressesResult result = ec2.describeAddresses(new DescribeAddressesRequest().withPublicIps(Collections.singletonList(staticIpAddress)));
             Address info = result.getAddresses().get(0);
             if (info.getInstanceId() != null
-                    && !info.getInstanceId().equals("")) {
+                    && !info.getInstanceId().equals("")
+                    && (vm.getCurrentInstance() != null && !info.getInstanceId().equals(vm.getCurrentInstance()))) {
                 throw new AddressAlreadyAssignedException(staticIpAddress, info.getInstanceId());
             }
         }
@@ -939,13 +976,14 @@ public class RainEngine extends BaseEngine {
             current.setUserData(vm.getUserData());
         }
 
-        if(vm.getVpcSubNet()!=null) {
+        if (vm.getVpcSubNet() != null) {
             checkVpcSubNet(vm);
             current.setVpcSubNet(vm.getVpcSubNet());
         }
         //TODO: check if the private ip really belongs to the subnet
-        if(vm.getPrivateIpAddress()!=null)
+        if (vm.getPrivateIpAddress() != null) {
             current.setPrivateIpAddress(vm.getPrivateIpAddress());
+        }
 
 
         virtualMachineDAO.saveOrUpdate(current);
@@ -1563,21 +1601,33 @@ public class RainEngine extends BaseEngine {
         String oldIpRange = oldValue + "/32";
         String newIpRange = newValue + "/32";
         for (SecurityGroup d : result.getSecurityGroups()) {
-
+            logger.fine("Looking at security group " + d.getGroupName());
             List<IpPermission> permissions = d.getIpPermissions();
             for (IpPermission p : permissions) {
+
+                logger.fine("Looking at permission " + p);
 
                 for (String ipRange : p.getIpRanges()) {
 
                     if (ipRange.equals(oldIpRange)) {
                         // Remove the security permissions
+                        IpPermission tmpPermission = new IpPermission();
+                        tmpPermission.setFromPort(p.getFromPort());
+                        tmpPermission.setToPort(p.getToPort());
+                        tmpPermission.setIpProtocol(p.getIpProtocol());
+                        tmpPermission.setIpRanges(Collections.singletonList(oldIpRange));
 
 
-                        RevokeSecurityGroupIngressRequest revokeRequest = new RevokeSecurityGroupIngressRequest(d.getGroupName(), Collections.singletonList(p));
+                        logger.fine("Revoking permission " + tmpPermission);
+
+
+                        RevokeSecurityGroupIngressRequest revokeRequest = new RevokeSecurityGroupIngressRequest().withGroupId(d.getGroupId()).withIpPermissions(Collections.singletonList(tmpPermission));
 
                         ec2.revokeSecurityGroupIngress(revokeRequest);
-                        p.setIpRanges(Collections.singleton(newIpRange));
-                        AuthorizeSecurityGroupIngressRequest authorizeRequest = new AuthorizeSecurityGroupIngressRequest(d.getGroupName(), Collections.singletonList(p));
+                        tmpPermission.setIpRanges(Collections.singleton(newIpRange));
+
+                        logger.fine("Authorizing permission " + tmpPermission);
+                        AuthorizeSecurityGroupIngressRequest authorizeRequest = new AuthorizeSecurityGroupIngressRequest().withGroupId(d.getGroupId()).withIpPermissions(Collections.singletonList(tmpPermission));
 
                         ec2.authorizeSecurityGroupIngress(authorizeRequest);
                     }
@@ -1597,16 +1647,18 @@ public class RainEngine extends BaseEngine {
 
     private void checkVpcSubNet(VirtualMachine vm) throws SubNetNotFoundException, InconsistentSubNetAvailabilityZoneException {
 
-        DescribeSubnetsResult result=ec2.describeSubnets(new DescribeSubnetsRequest().withSubnetIds(vm.getVpcSubNet()));
+        DescribeSubnetsResult result = ec2.describeSubnets(new DescribeSubnetsRequest().withSubnetIds(vm.getVpcSubNet()));
 
-        if(result.getSubnets().isEmpty())
+        if (result.getSubnets().isEmpty()) {
             throw new SubNetNotFoundException(vm.getVpcSubNet());
+        }
 
-        Subnet sn=result.getSubnets().get(0);
-        if(vm.getAvailabilityZone()!=null && !sn.getAvailabilityZone().equals(vm.getAvailabilityZone()))
+        Subnet sn = result.getSubnets().get(0);
+        if (vm.getAvailabilityZone() != null && !sn.getAvailabilityZone().equals(vm.getAvailabilityZone())) {
             throw new InconsistentSubNetAvailabilityZoneException(vm.getVpcSubNet());
+        }
 
-     // TODO: compare if machine private ip address really is in the subnet
+        // TODO: compare if machine private ip address really is in the subnet
 
 
 
