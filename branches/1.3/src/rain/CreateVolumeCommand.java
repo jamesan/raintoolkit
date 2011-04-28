@@ -54,17 +54,13 @@ public class CreateVolumeCommand extends BaseCommand {
 			}
 		}
 		else {
-			if(name==null) {
-				System.err.println("You must specify a volume name");
+			if(newName==null && volume==null) {
+				System.err.println("You must specify a new volume name or new volume id");
 				System.exit(1);
 				
 				
 			}
-			if(volume==null) {
-				System.err.println("You must specify a volume id to replace the current volume");
-				System.exit(1);
-				
-			}
+			
 		}
 
 		RainEngine engine = RainEngine.getInstance();

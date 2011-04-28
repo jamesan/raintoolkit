@@ -252,7 +252,7 @@ public class RainEngine extends BaseEngine {
             return INSTANCE_STATE_TERMINATED;
         }
 
-        return instances.getReservations().get(0).getInstances().get(0).getState().getCode();
+        return instances.getReservations().get(0).getInstances().get(0).getState().getCode() & 0xff;
 
 
     }
@@ -664,8 +664,8 @@ public class RainEngine extends BaseEngine {
 
                 if (attachments != null && attachments.size() > 0) {
                     logger.fine("Found attachment: " + attachments);
-                    if(attachments.get(0).getInstanceId().equals(vm.getCurrentInstance())) {
-                        logger.fine("Volume "+info.getVolumeId()+" is already attached");
+                    if (attachments.get(0).getInstanceId().equals(vm.getCurrentInstance())) {
+                        logger.fine("Volume " + info.getVolumeId() + " is already attached");
                         continue;
                     }
                     // Sometimes a volume can get struck in EC2, attached to
@@ -686,8 +686,8 @@ public class RainEngine extends BaseEngine {
                             Thread.sleep(DEFAULT_POLL_INTERVAL);
                         } catch (InterruptedException e) {
                         }
-                        i=i-1; // DANGEROUS!!!!! makes the loop pass this volume once again
-                        t=t+1;
+                        i = i - 1; // DANGEROUS!!!!! makes the loop pass this volume once again
+                        t = t + 1;
                     } else {
                         throw new VolumeAlreadyAttachedException(volumes.get(i));
                     }
@@ -695,7 +695,7 @@ public class RainEngine extends BaseEngine {
                 }
 
 
-                
+
             }
             return availabilityZoneToCheck;
         }
@@ -1189,11 +1189,12 @@ public class RainEngine extends BaseEngine {
                         if (instance.getInstanceId().equals(
                                 vm.getCurrentInstance())) {
 
+                            int stateCode = instance.getState().getCode() & 0x00ff;
 
-                            info.setCurrentState(instance.getState().getCode());
+                            info.setCurrentState(stateCode);
 
 
-                            if ((instance.getState().getCode() == INSTANCE_STATE_RUNNING || instance.getState().getCode() == INSTANCE_STATE_STOPPED || instance.getState().getCode() == INSTANCE_STATE_STOPPING)) {
+                            if ((stateCode == INSTANCE_STATE_RUNNING || stateCode == INSTANCE_STATE_STOPPED || stateCode == INSTANCE_STATE_STOPPING)) {
                                 Calendar cal = Calendar.getInstance();
                                 cal.setTime(instance.getLaunchTime());
                                 info.setStartTime(cal);
@@ -1388,16 +1389,22 @@ public class RainEngine extends BaseEngine {
         checkVolumeAvailability(volume);
 
 
-        Volume vol2 = volumeDAO.findByVolumeId(volume);
 
-        if (vol2 != null) {
-            throw new VolumeAlreadyInUseException(vol2);
+        if (volume != null) {
+
+            Volume vol2 = volumeDAO.findByVolumeId(volume);
+
+            if (vol2 != null) {
+                throw new VolumeAlreadyInUseException(vol2);
+
+            }
+            vol.setVolumeId(volume);
         }
 
         if (newName != null) {
             vol.setName(newName);
         }
-        vol.setVolumeId(volume);
+
         volumeDAO.saveOrUpdate(vol);
 
         return vol.getVolumeId();
