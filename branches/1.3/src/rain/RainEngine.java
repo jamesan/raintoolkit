@@ -4,6 +4,7 @@
  */
 package rain;
 
+import com.amazonaws.AmazonServiceException;
 import com.amazonaws.auth.BasicAWSCredentials;
 import com.amazonaws.services.ec2.AmazonEC2;
 import com.amazonaws.services.ec2.AmazonEC2Client;
@@ -246,14 +247,25 @@ public class RainEngine extends BaseEngine {
             return null;
         }
 
-        DescribeInstancesResult instances = ec2.describeInstances(new DescribeInstancesRequest().withInstanceIds(vm.getCurrentInstance()));
+        try {
+            DescribeInstancesResult instances = ec2.describeInstances(new DescribeInstancesRequest().withInstanceIds(vm.getCurrentInstance()));
 
-        if (instances.getReservations().size() == 0) {
-            return INSTANCE_STATE_TERMINATED;
+            if (instances.getReservations().size() == 0) {
+                return INSTANCE_STATE_TERMINATED;
+            }
+
+            return instances.getReservations().get(0).getInstances().get(0).getState().getCode() & 0xff;
+
+        } catch (AmazonServiceException e) {
+
+            if (e.getErrorCode().equals("InvalidInstanceID.NotFound")) {
+                return INSTANCE_STATE_TERMINATED;
+            } else {
+                throw e;
+            }
+
+
         }
-
-        return instances.getReservations().get(0).getInstances().get(0).getState().getCode() & 0xff;
-
 
     }
 
