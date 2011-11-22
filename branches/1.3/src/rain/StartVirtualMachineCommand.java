@@ -50,6 +50,9 @@ public class StartVirtualMachineCommand extends BaseCommand {
                 catch(InstanceStoppingException e) {
                     output.printError("Virtual machine is still stopping");
                 }
+                catch(TimeoutWaitingForInstanceException e) {
+                    System.err.println("Timeout waiting for virtual machine to start, instance id is "+e.getInstanceId());
+                }
                 catch(Exception e) {
 			System.err.println("There was an unexpected exception while starting the virtual machine:");
 			e.printStackTrace(System.err);

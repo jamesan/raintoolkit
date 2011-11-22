@@ -8,6 +8,8 @@ public class CannotStartInstanceException extends Exception {
 
 	private int stateCode;
 	
+        
+        
 	public int getStateCode() {
 		return stateCode;
 	}

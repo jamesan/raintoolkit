@@ -86,6 +86,10 @@ import java.util.Map;
 public class RainEngine extends BaseEngine {
 
     private static final long DEFAULT_POLL_INTERVAL = 10000;
+    
+    private static final long MAX_INSTANCE_START_WAIT= 120000;
+    
+    
     private static final int MAX_MOUNT_RETRIES = 50;
     private static final int MAX_VOLUME_DETACH_RETRIES = 3;
     public static RainEngine instance;
@@ -275,14 +279,14 @@ public class RainEngine extends BaseEngine {
             VirtualMachineAlreadyRunningException,
             InconsistentAvailabilityZoneException,
             VolumeAlreadyAttachedException, AddressAlreadyAssignedException,
-            VolumeMountFailedException, AutoRunCommandFailedException, InstanceStoppingException {
+            VolumeMountFailedException, AutoRunCommandFailedException, InstanceStoppingException, TimeoutWaitingForInstanceException {
 
         VirtualMachine vm = virtualMachineDAO.findByName(name);
         if (vm == null) {
             throw new VirtualMachineNotFoundException(name);
         }
 
-        try {
+      
             Integer currentState = getVirtualMachineStatus(name);
 
             if (currentState != null && currentState == INSTANCE_STATE_RUNNING) {
@@ -378,14 +382,12 @@ public class RainEngine extends BaseEngine {
 
             return getPublicDnsNameOrIpAddress(instance);
 
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
+        
 
     }
 
     private void executeAutoRuncommand(VirtualMachine vm, Instance instance)
-            throws IOException, InterruptedException,
+            throws 
             AutoRunCommandFailedException {
 
         int exitStatus = executeCommand(vm, instance, vm.getAutoRunCommand());
@@ -427,7 +429,7 @@ public class RainEngine extends BaseEngine {
 
     }
 
-    private Instance associateIpAddress(VirtualMachine vm, Instance instance) throws UnknownHostException {
+    private Instance associateIpAddress(VirtualMachine vm, Instance instance)  {
         // Associates the ip address and waits until the instance assumes the
         // address
 
@@ -448,7 +450,11 @@ public class RainEngine extends BaseEngine {
         do {
             instance = refreshInstanceInformation(instance);
             instanceAddress = getPublicDnsNameOrIpAddress(instance);
-            instanceAddress = InetAddress.getByName(instanceAddress).getHostAddress();
+            try {
+                instanceAddress = InetAddress.getByName(instanceAddress).getHostAddress();
+            } catch (UnknownHostException ex) {
+                throw new RuntimeException(ex);
+            }
             if (!instanceAddress.equals(vm.getStaticIpAddress())) {
                 try {
                     logger.fine("Waiting for static ip to be assigned (current name= " + instance.getPublicDnsName() + ", ip = " + instanceAddress + ", wanted = " + vm.getStaticIpAddress() + ")");
@@ -475,7 +481,7 @@ public class RainEngine extends BaseEngine {
     }
 
     private void mountVolumes(VirtualMachine vm, Instance currentInstance)
-            throws IOException, InterruptedException,
+            throws 
             VolumeMountFailedException {
 
         // Executes ssh in order to mount the volumes for the given vm
@@ -493,7 +499,7 @@ public class RainEngine extends BaseEngine {
     }
 
     public int executeCommand(VirtualMachine vm, Instance currentInstance,
-            String command) throws IOException, InterruptedException {
+            String command)  {
 
         String instanceAddress = getPublicDnsNameOrIpAddress(currentInstance);
 
@@ -513,16 +519,26 @@ public class RainEngine extends BaseEngine {
 
         logger.fine("Executing: " + cmd);
 
-        Process p = Runtime.getRuntime().exec(cmdLine);
+        Process p;
+        try {
+            p = Runtime.getRuntime().exec(cmdLine);
+        } catch (IOException ex) {
+           throw new RuntimeException(ex);
+        }
 
-        int exitStatus = p.waitFor();
+        int exitStatus;
+        try {
+            exitStatus = p.waitFor();
+        } catch (InterruptedException ex) {
+            throw new RuntimeException(ex);
+        }
         return exitStatus;
 
     }
 
     private void mountVolume(Volume vol, VirtualMachine vm,
-            Instance currentInstance) throws IOException,
-            VolumeMountFailedException, InterruptedException {
+            Instance currentInstance) throws
+            VolumeMountFailedException {
 
         // Retry a number of times in case of failure since ssh may not yet have
         // started
@@ -539,7 +555,11 @@ public class RainEngine extends BaseEngine {
             }
 
             logger.fine("Mount failed , waiting to try again...");
-            Thread.sleep(DEFAULT_POLL_INTERVAL);
+            try {
+                Thread.sleep(DEFAULT_POLL_INTERVAL);
+            } catch (InterruptedException ex) {
+                
+            }
 
         }
 
@@ -620,25 +640,40 @@ public class RainEngine extends BaseEngine {
         logger.fine("All volumes attached");
     }
 
-    private Instance waitForInstanceToStartRunning(String instanceId) {
-        int state;
-        Instance instance;
+    private Instance waitForInstanceToStartRunning(String instanceId) throws TimeoutWaitingForInstanceException {
+        int state=0;
+        Instance instance=null;
+        long waitStartTime=System.currentTimeMillis();
+        
         do {
-            DescribeInstancesResult result = ec2.describeInstances(new DescribeInstancesRequest().withInstanceIds(Collections.singletonList(instanceId)));
-            instance = result.getReservations().get(0).getInstances().get(0);
-            state = instance.getState().getCode();
+            DescribeInstancesResult result=null;
+            
+            try {
+                result= ec2.describeInstances(new DescribeInstancesRequest().withInstanceIds(Collections.singletonList(instanceId)));
+            
+            }
+            catch(AmazonServiceException e) {
+                // As of 18/11/2011 AWS seems to be returning this error sometimes
+                // even tough the instance id was returned from the RunInstances call.
+                if(!e.getErrorCode().equals("InvalidInstanceID.NotFound"))
+                    throw new RuntimeException(e);
+                
+            }
+            if(result!=null) {
+                instance = result.getReservations().get(0).getInstances().get(0);
+                state = instance.getState().getCode();
+            }
+            
+           
             if (state == 0) {
+                
+                 if(System.currentTimeMillis()-waitStartTime>MAX_INSTANCE_START_WAIT)
+                        throw new TimeoutWaitingForInstanceException(instanceId);
                 try {
                     Thread.sleep(DEFAULT_POLL_INTERVAL);
                 } catch (InterruptedException e) {
                 }
-                if (result.getReservations().size() < 1) {
-                    throw new RuntimeException("Instance "
-                            + instance.getInstanceId()
-                            + " vanished while waiting for it to start");
-                }
-
-
+                
             }
         } while (state == 0);
 
