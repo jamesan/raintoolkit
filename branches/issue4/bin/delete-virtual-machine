@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-RAIN_HOME=${RAIN_HOME:?RAIN_HOME is not set}
-$RAIN_HOME/bin/rain-cmd DeleteVirtualMachineCommand "$@"
-
